@@ -134,7 +134,7 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
     never = [
         record
         for key, record in loaded.roster.items()
-        if key not in attended_keys and record.active
+        if key not in attended_keys and record.expected
     ]
     never.sort(key=lambda r: _display(r.key))
 
