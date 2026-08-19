@@ -15,11 +15,21 @@ async def js():
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.on("console", lambda m: errs.append("console:" + m.text) if m.type == "error" else None)
         await pg.goto("http://localhost:8899/index.html")
-        out = await pg.evaluate("""async (today) => {
+        import base64, pathlib as _pl
+        payload = {
+            "today": TODAY,
+            "att": base64.b64encode(_pl.Path("testdata/attendance.xlsx").read_bytes()).decode(),
+            "stu": base64.b64encode(_pl.Path("testdata/students.xlsx").read_bytes()).decode(),
+        }
+        out = await pg.evaluate("""async (p) => {
+            const today = p.today;
             const M = window.__mt;
-            const load = async (u) => await M.readSheet(await (await fetch(u)).arrayBuffer());
-            const att = await load("testdata/attendance.xlsx");
-            const stu = await load("testdata/students.xlsx");
+            // Bytes rather than fetch: the page's CSP sets connect-src 'none', so the
+            // harness has to hand files over the way a user picking a file does.
+            const buf = (b64) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; };
+            const att = await M.readSheet(buf(p.att));
+            const stu = await M.readSheet(buf(p.stu));
             const [y,m,d] = today.split("-").map(Number);
             const rep = M.buildReport(att, stu, Date.UTC(y, m-1, d)/86400000);
             const per = {};
@@ -38,7 +48,7 @@ async def js():
                      missed: rep.students.reduce((a,s)=>a+s.missed.length,0) },
                      dataThrough: rep.dataThrough.y+"-"+rep.dataThrough.m+"-"+rep.dataThrough.d,
                      per };
-        }""", TODAY)
+        }""", payload)
         await b.close()
         return out, errs
 
