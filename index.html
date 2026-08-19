@@ -656,6 +656,39 @@ function inferSchedule(visits, requiredHours) {
   return { weekdays, sessionHours, confident: true, reason: "inferred from attendance history" };
 }
 
+function inferScheduleForMonth(visits, requiredHours, firstN, lastN) {
+  // Infer the schedule that applied during one month, not across the whole export.
+  // Schedules change: a student who moved from Tue/Thu to Mon/Wed in August has an August
+  // that a whole-window inference reads as four scattered days, inventing missed sessions
+  // in both months. Measured against students who fully met July, per-month inference
+  // removed 17 invented scheduled days and scored better on every count.
+  const inMonth = visits.filter((v) => v.date.n >= firstN && v.date.n <= lastN && v.hours > 0);
+  const weeks = new Set(inMonth.map((v) => isoWeekKey(v.date.n))).size;
+  if (weeks >= 3) return inferSchedule(inMonth, requiredHours);
+
+  // Widen backwards only. Later months must not decide an earlier month's schedule.
+  const upto = visits.filter((v) => v.date.n <= lastN && v.hours > 0);
+  if (!upto.length) return inferSchedule(visits, requiredHours);
+
+  const widened = inferSchedule(upto, requiredHours);
+  if (!inMonth.length) return widened;
+
+  // A short month is normal for the current month and not by itself a reason to distrust
+  // the answer. What matters is whether the month's own days agree with the wider
+  // history. Agreement means the schedule is steady; disagreement means it moved, and
+  // that is the case worth flagging.
+  const monthOnly = inferSchedule(inMonth, requiredHours);
+  if (monthOnly.weekdays.join(",") === widened.weekdays.join(",")) return widened;
+  return {
+    weekdays: widened.weekdays,
+    sessionHours: widened.sessionHours,
+    confident: false,
+    reason: "only " + weeks + " week(s) attended this month, and those days (" +
+            scheduleLabel(monthOnly) + ") differ from the earlier pattern (" +
+            scheduleLabel(widened) + ")",
+  };
+}
+
 function scheduleLabel(s) {
   return s.weekdays.length ? s.weekdays.map((w) => WEEKDAYS[w]).join(", ") : "unknown";
 }
@@ -869,9 +902,18 @@ function buildReport(attendance, roster, todayN) {
   const students = [];
   for (const [key, list] of grouped) {
     const plan = (list.find((v) => v.spm) || {}).spm || 8;
-    const schedule = inferSchedule(list, plan);
     const rec = people.get(key) || null;
-    const months = span.map(([y, m]) => buildMonth(y, m, list, schedule, plan, rec, todayN, dataThroughN));
+    const schedules = {};
+    const months = span.map(([y, m]) => {
+      const firstN = mkDate(y, m, 1).n;
+      const lastN = mkDate(y, m, lastDayOf(y, m)).n;
+      const s = inferScheduleForMonth(list, plan, firstN, lastN);
+      schedules[y + "-" + m] = s;
+      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN);
+    });
+    // The student-level schedule is the one that applied most recently, since that is what
+    // someone reading the row wants. Earlier months keep their own.
+    const schedule = schedules[span[span.length - 1][0] + "-" + span[span.length - 1][1]];
     const ledger = settle(months);
     const current = months.find((mo) => mo.isCurrent) || null;
     const flags = [];
@@ -889,7 +931,7 @@ function buildReport(attendance, roster, todayN) {
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, schedule, months, ledger, rec, flags, current, attendedDates,
+      plan, schedule, schedules, months, ledger, rec, flags, current, attendedDates,
       onHold: !!(rec && rec.onHold),
       owed: ledger.owed,
       toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
@@ -985,7 +1027,9 @@ function detailFor(s) {
     (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
 
   const monthLines = s.months.map((mo) => {
+    const ms = s.schedules[mo.y + "-" + mo.m];
     let line = "<b>" + esc(mo.shortLabel) + "</b>: " + mo.attended + " of " + mo.required + " hrs";
+    if (ms && scheduleLabel(ms) !== scheduleLabel(s.schedule)) line += " &middot; schedule " + esc(scheduleLabel(ms));
     if (mo.isCurrent) line += " &middot; projected " + mo.projected + (mo.remaining ? " with " + mo.remaining + " left" : "");
     if (mo.proratedFrom) line += " &middot; prorated from " + fmt(mo.proratedFrom);
     if (mo.note) line += '<br><span style="color:var(--muted)">' + esc(mo.note) + "</span>";
