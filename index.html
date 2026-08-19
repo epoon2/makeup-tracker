@@ -50,6 +50,36 @@
   .err { background: #fdeceb; border-color: #f4c3bf; color: var(--bad); }
   #log { font: 12.5px/1.6 ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
          white-space: pre-wrap; margin-top: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .card .n { font-size: 26px; font-weight: 700; letter-spacing: -.5px; }
+  .card .k { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .card .x { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tab { padding: 7px 13px; border-radius: 6px; border: 1px solid transparent; cursor: pointer;
+         font-size: 13.5px; font-weight: 600; color: var(--muted); background: none; }
+  .tab:hover { background: #eef2f7; }
+  .tab.on { background: #e9f0fb; border-color: #cfe0f7; color: var(--accent); }
+  input[type=search] { font: inherit; font-size: 13.5px; padding: 7px 11px; border: 1px solid var(--line);
+                       border-radius: 6px; background: var(--panel); }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13.5px; }
+  th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase;
+       letter-spacing: .4px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  td { padding: 9px 10px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
+  tr.head { cursor: pointer; }
+  tr.head:hover td { background: #f7fafd; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: #fdeceb; color: var(--bad); }
+  .pill.ok { background: #e7f3ea; color: var(--ok); }
+  .pill.mute { background: #eef2f7; color: var(--muted); }
+  .detail { background: #fbfcfe; }
+  .detail dl { display: grid; grid-template-columns: 150px 1fr; gap: 4px 14px; margin: 4px 0 0; }
+  .detail dt { color: var(--muted); font-size: 12.5px; }
+  .detail dd { margin: 0; font-size: 13px; }
+  .dates { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; }
+  .empty { color: var(--muted); padding: 26px 4px; text-align: center; }
 </style>
 </head>
 <body>
@@ -78,6 +108,20 @@
     </div>
     <div id="messages"></div>
     <div id="log"></div>
+  </div>
+
+  <div id="results" hidden>
+    <div class="cards" id="cards"></div>
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <div class="tabs" id="tabs"></div>
+        <div class="row">
+          <input type="search" id="find" placeholder="Filter by name" autocomplete="off">
+          <button class="ghost" id="download">Export to Excel</button>
+        </div>
+      </div>
+      <div id="tableWrap"></div>
+    </div>
   </div>
 </main>
 
@@ -315,12 +359,590 @@ function wireDrop(node, which) {
 wireDrop(el("dropAtt"), "attendance");
 wireDrop(el("dropStu"), "roster");
 
+/* ---------------------------------------------------------------------------
+   Dates.
+
+   Everything is a UTC day number. Local-time Date objects are the wrong tool for
+   calendar arithmetic: a date parsed at 1am in a negative offset lands on the
+   previous day, which turns a Monday session into a Sunday one and silently moves
+   students onto schedules they do not have.
+--------------------------------------------------------------------------- */
+
+const DAY = 86400000;
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MON_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const WEEKDAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const NO_END = new Set(["recurring", "", "none", "n/a"]);
+
+function mkDate(y, m, d) { return { y, m, d, n: Date.UTC(y, m - 1, d) / DAY }; }
+function fromDayNumber(n) {
+  const t = new Date(n * DAY);
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate(), n };
+}
+// Monday = 0, to match the reference implementation.
+function weekdayOf(n) { return (new Date(n * DAY).getUTCDay() + 6) % 7; }
+function lastDayOf(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+function fmt(dte) { return dte.m + "/" + dte.d + "/" + dte.y; }
+function fmtShort(dte) { return MON_ABBR[dte.m - 1] + " " + dte.d; }
+function fmtLong(dte) { return MON_ABBR[dte.m - 1] + " " + dte.d + ", " + dte.y; }
+
+function isoWeekKey(n) {
+  // ISO weeks so "how many distinct weeks of history" matches Python's isocalendar.
+  const t = new Date(n * DAY);
+  const day = (t.getUTCDay() + 6) % 7;
+  t.setUTCDate(t.getUTCDate() - day + 3);
+  const year = t.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(year, 0, 4));
+  const offset = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - offset + 3);
+  return year + "-" + (1 + Math.round((t - firstThursday) / (7 * DAY)));
+}
+
+function parseDate(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text || NO_END.has(text.toLowerCase())) return null;
+  // Excel can hand back a serial number instead of text.
+  if (/^\d+(\.\d+)?$/.test(text) && Number(text) > 1000) {
+    const parts = serialToDate(Number(text)).split("/");
+    return mkDate(+parts[2], +parts[0], +parts[1]);
+  }
+  const m = text.match(/^(\d{1,4})[/-](\d{1,2})[/-](\d{1,4})/);
+  if (!m) return null;
+  let [a, b, c] = [+m[1], +m[2], +m[3]];
+  let y, mo, d;
+  if (a > 31) { y = a; mo = b; d = c; } else { mo = a; d = b; y = c; }
+  if (y < 100) y += 2000;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return mkDate(y, mo, d);
+}
+
+/* ---------------------------------------------------------------------------
+   Normalisation
+--------------------------------------------------------------------------- */
+
+function roundHours(minutes) {
+  const v = Number(minutes);
+  if (!isFinite(v) || v <= 0) return 0;
+  return Math.floor(v / 60 + 0.5);
+}
+
+function nameKey(first, last) {
+  const clean = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim().toLowerCase();
+  return clean(first) + "\u001f" + clean(last);
+}
+
+function displayName(key) {
+  const [f, l] = key.split("\u001f");
+  const title = (s) => s.replace(/\S+/g, (w) => w[0].toUpperCase() + w.slice(1));
+  return (title(f) + " " + title(l)).trim();
+}
+
+const ACTIVE = new Set(["enrolled", "new", "pre-enrolled"]);
+
+function normalise(attendance, roster) {
+  const warnings = [];
+  const visits = [];
+  let unparsed = 0, zero = 0;
+  for (const r of attendance.records) {
+    const when = parseDate(r["Attendance Date"]);
+    if (!when) { unparsed++; continue; }
+    const hours = roundHours(r["Duration (Minutes)"]);
+    if (hours <= 0) { zero++; continue; }
+    visits.push({
+      key: nameKey(r["First Name"], r["Last Name"]),
+      date: when,
+      hours,
+      spm: parseInt(r["Sessions Per Month"], 10) || 0,
+    });
+  }
+  if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
+  if (zero) warnings.push(zero + " attendance rows rounded to 0 hours and were ignored");
+
+  const people = new Map();
+  const clash = new Set();
+  for (const r of roster.records) {
+    const key = nameKey(r["First Name"], r["Last Name"]);
+    const status = String(r["Enrollment Status"] || "").trim();
+    const rec = {
+      key,
+      studentId: String(r["Student Id"] || "").trim(),
+      status,
+      start: parseDate(r["Enrollment Start Date"]),
+      end: parseDate(r["Enrollment End Date"]),
+      lastAttendance: parseDate(r["Last Attendance Date"]),
+      onHold: status.toLowerCase() === "on hold",
+      ambiguous: false,
+    };
+    rec.active = ACTIVE.has(status.toLowerCase()) || rec.onHold;
+    const seen = people.get(key);
+    if (!seen) { people.set(key, rec); continue; }
+    clash.add(key);
+    // Prefer the active record, then the more recently attending one. Either way the
+    // student is flagged, so the report says it picked rather than pretending.
+    let better = rec.active && !seen.active;
+    if (!better && rec.active === seen.active) {
+      better = (rec.lastAttendance ? rec.lastAttendance.n : -Infinity) > (seen.lastAttendance ? seen.lastAttendance.n : -Infinity);
+    }
+    if (better) people.set(key, rec);
+  }
+  for (const key of clash) people.get(key).ambiguous = true;
+  if (clash.size) {
+    warnings.push(clash.size + " names appear on more than one roster record; those students are flagged rather than silently merged");
+  }
+  return { visits, people, warnings };
+}
+
+/* ---------------------------------------------------------------------------
+   Schedule inference
+--------------------------------------------------------------------------- */
+
+const WEEKS_PER_MONTH = 4;
+
+function inferSchedule(visits, requiredHours) {
+  const usable = visits.filter((v) => v.hours > 0);
+  if (!usable.length) return { weekdays: [], sessionHours: 1, confident: false, reason: "no attendance to infer from" };
+
+  const lengths = new Map();
+  for (const v of usable) lengths.set(v.hours, (lengths.get(v.hours) || 0) + 1);
+  const topCount = Math.max(...lengths.values());
+  // Tie goes to the shorter session: overstating session length understates how many
+  // days a week the student is expected, which would invent missed dates.
+  const sessionHours = Math.min(...[...lengths].filter(([, c]) => c === topCount).map(([h]) => h));
+
+  const wanted = Math.max(1, Math.min(6, Math.round(requiredHours / (WEEKS_PER_MONTH * (sessionHours || 1)))));
+
+  const counts = new Map();
+  for (const v of usable) {
+    const w = weekdayOf(v.date.n);
+    counts.set(w, (counts.get(w) || 0) + 1);
+  }
+  const ranked = [...counts].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+  const weekdays = ranked.slice(0, wanted).map(([w]) => w).sort((a, b) => a - b);
+
+  if (ranked.length < wanted) {
+    return { weekdays, sessionHours, confident: false,
+             reason: "only " + ranked.length + " distinct weekday(s) attended, plan implies " + wanted };
+  }
+  if (ranked.length > wanted && ranked[wanted][1] >= ranked[wanted - 1][1]) {
+    return { weekdays, sessionHours, confident: false, reason: "attendance spread evenly across too many weekdays" };
+  }
+  const weeks = new Set(usable.map((v) => isoWeekKey(v.date.n))).size;
+  if (weeks < 3) {
+    return { weekdays, sessionHours, confident: false, reason: "only " + weeks + " week(s) of history" };
+  }
+  return { weekdays, sessionHours, confident: true, reason: "inferred from attendance history" };
+}
+
+function scheduleLabel(s) {
+  return s.weekdays.length ? s.weekdays.map((w) => WEEKDAYS[w]).join(", ") : "unknown";
+}
+
+function scheduledDates(schedule, fromN, toN) {
+  if (!schedule.weekdays.length) return [];
+  const set = new Set(schedule.weekdays);
+  const out = [];
+  for (let n = fromN; n <= toN; n++) if (set.has(weekdayOf(n))) out.push(n);
+  return out;
+}
+
+/* ---------------------------------------------------------------------------
+   Whole-month absence: was the student enrolled?
+
+   Enrollment Status describes today, so it is not evidence about a past month. What
+   is evidence is attendance, because attendance can only be recorded for an enrolled
+   student. So the question is whether the gap is bracketed on both sides.
+--------------------------------------------------------------------------- */
+
+const ENROLLED = "enrolled", NOT_ENROLLED = "not-enrolled", UNVERIFIABLE = "unverifiable";
+
+function resolveAbsence(rec, visitDays, first, last) {
+  if (rec) {
+    if (rec.start && rec.start.n > last) return { basis: NOT_ENROLLED, detail: "enrollment started " + fmt(rec.start) + ", after this month" };
+    if (rec.end && rec.end.n < first) return { basis: NOT_ENROLLED, detail: "enrollment ended " + fmt(rec.end) + ", before this month" };
+  }
+  const before = visitDays.some((n) => n < first);
+  const after = visitDays.some((n) => n > last);
+
+  let left = before, leftWhy = before ? "attended before this month" : "";
+  if (!left && rec && rec.start && rec.start.n <= first) { left = true; leftWhy = "enrolled since " + fmt(rec.start); }
+
+  let right = after, rightWhy = after ? "attended after this month" : "";
+  if (!right && rec && rec.lastAttendance && rec.lastAttendance.n > last) { right = true; rightWhy = "last attended " + fmt(rec.lastAttendance); }
+
+  if (!right) return { basis: NOT_ENROLLED, detail: "no attendance or enrollment activity after this month" };
+  if (!left) return { basis: NOT_ENROLLED, detail: "no evidence of enrollment before this month; treated as not yet started" };
+
+  let detail = leftWhy + " and " + rightWhy;
+  if (rec && rec.onHold) detail += "; currently on hold, and holds are not dated in the export";
+  return { basis: UNVERIFIABLE, detail };
+}
+
+/* ---------------------------------------------------------------------------
+   Per-month accounting
+--------------------------------------------------------------------------- */
+
+function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN) {
+  const first = mkDate(y, m, 1).n;
+  const last = mkDate(y, m, lastDayOf(y, m)).n;
+  const today = fromDayNumber(todayN);
+  const isCurrent = y === today.y && m === today.m;
+
+  const inMonth = visits.filter((v) => v.date.n >= first && v.date.n <= last);
+  const attended = inMonth.reduce((sum, v) => sum + v.hours, 0);
+  const onHold = !!(rec && rec.onHold);
+
+  let activeFrom = first, activeTo = last;
+  if (rec && rec.start && rec.start.n > first) activeFrom = rec.start.n;
+  if (rec && rec.end && rec.end.n < last) activeTo = rec.end.n;
+
+  let required = planHours, proratedFrom = null;
+  if (!(activeFrom <= first && activeTo >= last)) {
+    const full = scheduledDates(schedule, first, last);
+    if (full.length) {
+      const covered = full.filter((n) => n >= activeFrom && n <= activeTo).length;
+      required = Math.max(0, Math.floor((planHours * covered) / full.length + 0.5));
+    }
+    if (activeFrom > first) proratedFrom = fromDayNumber(activeFrom);
+  }
+
+  const out = {
+    y, m, required, attended, onHold, isCurrent, proratedFrom,
+    label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
+    scheduled: [], missed: [], absentWholeMonth: false, basis: "", detail: "", projected: 0, note: "",
+  };
+
+  // The horizon is the last date we can honestly call missed: never today, because
+  // attendance is entered at end of day, and never past what the export covers.
+  let horizon = Math.min(last, todayN - 1);
+  if (dataThroughN != null) horizon = Math.min(horizon, dataThroughN);
+
+  const attendedDays = new Set(inMonth.map((v) => v.date.n));
+  out.scheduled = scheduledDates(schedule, Math.max(first, activeFrom), Math.min(last, activeTo));
+  out.missed = out.scheduled.filter((n) => n <= horizon && !attendedDays.has(n));
+
+  if (onHold) { out.required = 0; out.note = "on hold, debt frozen"; return out; }
+
+  if (isCurrent) {
+    const remaining = out.scheduled.filter((n) => n > horizon);
+    out.projected = attended + remaining.length * schedule.sessionHours;
+    out.remaining = remaining.length;
+    if (out.projected < out.required) {
+      out.note = "not on track: " + out.projected + " of " + out.required + " hrs projected with " + remaining.length + " session(s) left";
+    }
+    return out;
+  }
+
+  if (attended === 0 && required > 0) {
+    out.absentWholeMonth = true;
+    const verdict = resolveAbsence(rec, visits.map((v) => v.date.n), first, last);
+    out.basis = verdict.basis;
+    out.detail = verdict.detail;
+    if (verdict.basis === NOT_ENROLLED) {
+      out.required = 0;
+      out.note = "not enrolled during " + out.label + " (" + verdict.detail + "), no makeups owed";
+    } else if (verdict.basis === UNVERIFIABLE) {
+      out.note = out.required + " hrs because they were not here in " + out.label +
+                 "; enrollment that month could not be confirmed (" + verdict.detail + ")";
+    } else {
+      out.note = "enrolled but absent all of " + out.label;
+    }
+  }
+  return out;
+}
+
+/* ---------------------------------------------------------------------------
+   FIFO settlement inside a two-month grace window
+--------------------------------------------------------------------------- */
+
+const GRACE_MONTHS = 2;
+const monthIndex = (y, m) => y * 12 + (m - 1);
+
+function settle(months) {
+  const debts = [], payments = [];
+  let expired = 0, unused = 0;
+  const ordered = [...months].sort((a, b) => monthIndex(a.y, a.m) - monthIndex(b.y, b.m));
+
+  for (const month of ordered) {
+    const now = monthIndex(month.y, month.m);
+    // Expire before applying this month's excess, so a lapsed debt can never be paid
+    // by hours attended after it lapsed.
+    for (const debt of debts) {
+      if (!debt.expired && debt.outstanding > 0 && now > debt.expiresAfter) {
+        debt.expired = true;
+        expired += debt.outstanding;
+      }
+    }
+    if (month.onHold || month.isCurrent) continue;
+
+    let excess = Math.max(0, month.attended - month.required);
+    if (excess) {
+      for (const debt of debts) {
+        if (excess <= 0) break;
+        if (debt.expired || debt.outstanding <= 0) continue;
+        const applied = Math.min(excess, debt.outstanding);
+        debt.outstanding -= applied;
+        excess -= applied;
+        payments.push({ from: month.label, to: debt.label, hours: applied });
+      }
+      unused += excess;
+    }
+    const shortfall = Math.max(0, month.required - month.attended);
+    if (shortfall) {
+      debts.push({
+        y: month.y, m: month.m, hours: shortfall, outstanding: shortfall, expired: false,
+        label: MON_ABBR[month.m - 1] + " " + month.y,
+        expiresAfter: now + GRACE_MONTHS, basis: month.basis, note: month.note,
+      });
+    }
+  }
+  const owed = debts.filter((d) => !d.expired).reduce((s, d) => s + d.outstanding, 0);
+  return { debts, payments, expired, unused, owed, open: debts.filter((d) => !d.expired && d.outstanding > 0) };
+}
+
+/* ---------------------------------------------------------------------------
+   Report assembly
+--------------------------------------------------------------------------- */
+
+function buildReport(attendance, roster, todayN) {
+  const { visits, people, warnings } = normalise(attendance, roster);
+  if (!visits.length) throw new Error("The attendance export had no usable rows.");
+
+  const dataThroughN = Math.max(...visits.map((v) => v.date.n));
+  const firstN = Math.min(...visits.map((v) => v.date.n));
+  const today = fromDayNumber(todayN);
+  const firstDate = fromDayNumber(firstN);
+
+  const span = [];
+  for (let y = firstDate.y, m = firstDate.m; y * 12 + m <= today.y * 12 + today.m; ) {
+    span.push([y, m]);
+    if (m === 12) { y++; m = 1; } else { m++; }
+  }
+
+  const grouped = new Map();
+  for (const v of visits) {
+    if (!grouped.has(v.key)) grouped.set(v.key, []);
+    grouped.get(v.key).push(v);
+  }
+
+  const students = [];
+  for (const [key, list] of grouped) {
+    const plan = (list.find((v) => v.spm) || {}).spm || 8;
+    const schedule = inferSchedule(list, plan);
+    const rec = people.get(key) || null;
+    const months = span.map(([y, m]) => buildMonth(y, m, list, schedule, plan, rec, todayN, dataThroughN));
+    const ledger = settle(months);
+    const current = months.find((mo) => mo.isCurrent) || null;
+    const flags = [];
+    if (!schedule.confident) flags.push("schedule uncertain: " + schedule.reason);
+    if (rec && rec.ambiguous) flags.push("more than one roster record under this name");
+    if (!rec) flags.push("no roster record matched");
+    for (const mo of months) {
+      if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE) {
+        flags.push(mo.required + " hrs granted for " + mo.label + "; enrollment that month unconfirmed");
+      }
+    }
+    students.push({
+      key, display: displayName(key), studentId: rec ? rec.studentId : "",
+      plan, schedule, months, ledger, rec, flags, current,
+      onHold: !!(rec && rec.onHold),
+      owed: ledger.owed,
+      toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
+      missed: months.flatMap((mo) => mo.missed).sort((a, b) => a - b),
+    });
+  }
+
+  const attendedKeys = new Set(grouped.keys());
+  const neverAttended = [...people.values()]
+    .filter((r) => !attendedKeys.has(r.key) && r.active)
+    .sort((a, b) => displayName(a.key).localeCompare(displayName(b.key)));
+
+  const elapsed = span.filter(([y, m]) => !(y === today.y && m === today.m));
+  if (elapsed.length < 2) {
+    warnings.push("only " + elapsed.length + " completed month(s) of attendance are available, so the two-month grace window cannot settle debt against a later month yet");
+  }
+  const shaky = students.filter((s) => !s.schedule.confident).length;
+  if (shaky) {
+    warnings.push(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates");
+  }
+
+  return {
+    today, dataThrough: fromDayNumber(dataThroughN), span, students, neverAttended, warnings,
+    owing: students.filter((s) => s.owed > 0 && !s.onHold).sort((a, b) => b.owed - a.owed || a.display.localeCompare(b.display)),
+    behind: students.filter((s) => s.toSchedule > 0 && !s.onHold).sort((a, b) => b.toSchedule - a.toSchedule || a.display.localeCompare(b.display)),
+    held: students.filter((s) => s.onHold).sort((a, b) => a.display.localeCompare(b.display)),
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Rendering
+--------------------------------------------------------------------------- */
+
+let report = null;
+let activeTab = "owing";
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function card(n, k, x) {
+  return '<div class="card"><div class="n">' + n + '</div><div class="k">' + k + '</div>' +
+         (x ? '<div class="x">' + x + "</div>" : "") + "</div>";
+}
+
+function renderCards() {
+  const owedHours = report.owing.reduce((s, x) => s + x.owed, 0);
+  const bookHours = report.behind.reduce((s, x) => s + x.toSchedule, 0);
+  const flagged = report.students.reduce((s, x) =>
+    s + x.months.filter((mo) => mo.absentWholeMonth && mo.basis === UNVERIFIABLE).reduce((a, mo) => a + mo.required, 0), 0);
+  el("cards").innerHTML =
+    card(report.owing.length, "owe makeup hours", owedHours + " hrs outstanding") +
+    card(report.behind.length, "behind pace this month", bookHours + " hrs to book") +
+    card(report.held.length, "on hold", "debt frozen") +
+    card(report.neverAttended.length, "enrolled, never attended", "no visits in this export") +
+    card(flagged, "hrs need checking", "whole-month absences we could not confirm");
+}
+
+const TABS = [
+  ["owing", "Owes hours"],
+  ["behind", "Behind pace"],
+  ["held", "On hold"],
+  ["never", "Never attended"],
+  ["all", "All students"],
+];
+
+function rowsFor(tab) {
+  if (tab === "never") return report.neverAttended;
+  if (tab === "all") return [...report.students].sort((a, b) => a.display.localeCompare(b.display));
+  return report[tab === "held" ? "held" : tab];
+}
+
+function renderTabs() {
+  el("tabs").innerHTML = TABS.map(([id, label]) => {
+    const n = rowsFor(id).length;
+    return '<button class="tab' + (id === activeTab ? " on" : "") + '" data-tab="' + id + '">' +
+           esc(label) + " <span class=\"pill mute\">" + n + "</span></button>";
+  }).join("");
+}
+
+function detailFor(s) {
+  const rows = [];
+  rows.push("<dt>Schedule</dt><dd>" + esc(scheduleLabel(s.schedule)) + " &middot; " +
+            s.schedule.sessionHours + " hr sessions &middot; " +
+            (s.schedule.confident ? '<span class="pill ok">confident</span>' : '<span class="pill warn">' + esc(s.schedule.reason) + "</span>") + "</dd>");
+  rows.push("<dt>Plan</dt><dd>" + s.plan + " hrs/month</dd>");
+  if (s.rec) rows.push("<dt>Enrollment</dt><dd>" + esc(s.rec.status) +
+    (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
+
+  const monthLines = s.months.map((mo) => {
+    let line = "<b>" + esc(mo.shortLabel) + "</b>: " + mo.attended + " of " + mo.required + " hrs";
+    if (mo.isCurrent) line += " &middot; projected " + mo.projected + (mo.remaining ? " with " + mo.remaining + " left" : "");
+    if (mo.proratedFrom) line += " &middot; prorated from " + fmt(mo.proratedFrom);
+    if (mo.note) line += '<br><span style="color:var(--muted)">' + esc(mo.note) + "</span>";
+    return line;
+  });
+  rows.push("<dt>By month</dt><dd>" + monthLines.join("<br>") + "</dd>");
+
+  if (s.ledger.payments.length) {
+    rows.push("<dt>Paid off</dt><dd>" + s.ledger.payments.map((p) =>
+      p.hours + " hr(s) of " + esc(p.to) + " covered by " + esc(p.from)).join("<br>") + "</dd>");
+  }
+  if (s.ledger.expired) rows.push("<dt>Expired unpaid</dt><dd>" + s.ledger.expired + " hrs past the two-month grace</dd>");
+
+  if (s.missed.length) {
+    rows.push("<dt>Missed dates</dt><dd class=\"dates\">" +
+      s.missed.map((n) => fmtShort(fromDayNumber(n))).join(" &middot; ") + "</dd>");
+  } else {
+    rows.push("<dt>Missed dates</dt><dd style=\"color:var(--muted)\">none</dd>");
+  }
+  if (s.flags.length) {
+    rows.push("<dt>Check</dt><dd>" + s.flags.map((f) => '<span class="pill warn">' + esc(f) + "</span>").join(" ") + "</dd>");
+  }
+  return '<dl>' + rows.join("") + "</dl>";
+}
+
+function renderTable() {
+  const filter = el("find").value.trim().toLowerCase();
+  const wrap = el("tableWrap");
+
+  if (activeTab === "never") {
+    const list = report.neverAttended.filter((r) => !filter || displayName(r.key).toLowerCase().includes(filter));
+    wrap.innerHTML = !list.length ? '<div class="empty">Nobody here.</div>' :
+      "<table><thead><tr><th>Student</th><th>Status</th><th>Enrolled since</th><th>Last attendance on record</th></tr></thead><tbody>" +
+      list.map((r) => "<tr><td>" + esc(displayName(r.key)) + "</td><td>" + esc(r.status) + "</td><td>" +
+        (r.start ? fmt(r.start) : '<span style="color:var(--muted)">not recorded</span>') + "</td><td>" +
+        (r.lastAttendance ? fmt(r.lastAttendance) : '<span style="color:var(--muted)">never</span>') + "</td></tr>").join("") +
+      "</tbody></table>";
+    return;
+  }
+
+  const list = rowsFor(activeTab).filter((s) => !filter || s.display.toLowerCase().includes(filter));
+  if (!list.length) { wrap.innerHTML = '<div class="empty">Nobody here.</div>'; return; }
+
+  wrap.innerHTML =
+    "<table><thead><tr><th>Student</th><th>Schedule</th><th>Plan</th>" +
+    '<th class="num">Owes</th><th class="num">Book now</th><th class="num">Missed</th><th>Flags</th></tr></thead><tbody>' +
+    list.map((s, i) => {
+      const flag = s.onHold ? '<span class="pill mute">on hold</span>' : "";
+      const warn = s.flags.length ? '<span class="pill warn">' + s.flags.length + " to check</span>" : "";
+      return '<tr class="head" data-i="' + i + '">' +
+        "<td>" + esc(s.display) + "</td>" +
+        "<td>" + esc(scheduleLabel(s.schedule)) + (s.schedule.confident ? "" : ' <span class="pill warn">?</span>') + "</td>" +
+        '<td class="num">' + s.plan + "</td>" +
+        '<td class="num">' + (s.owed ? '<span class="pill bad">' + s.owed + "</span>" : "&mdash;") + "</td>" +
+        '<td class="num">' + (s.toSchedule ? '<span class="pill warn">' + s.toSchedule + "</span>" : "&mdash;") + "</td>" +
+        '<td class="num">' + (s.missed.length || "&mdash;") + "</td>" +
+        "<td>" + flag + " " + warn + "</td></tr>" +
+        '<tr class="detail" data-d="' + i + '" hidden><td colspan="7">' + detailFor(s) + "</td></tr>";
+    }).join("") + "</tbody></table>";
+
+  wrap.querySelectorAll("tr.head").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      const row = wrap.querySelector('tr.detail[data-d="' + tr.dataset.i + '"]');
+      row.hidden = !row.hidden;
+    });
+  });
+}
+
+function render() {
+  el("results").hidden = false;
+  el("stamp").className = "stamp live";
+  el("stamp").textContent = "Last attendance in this export: " + fmtLong(report.dataThrough) +
+                            "  ·  analysed as of " + fmtLong(report.today);
+  renderCards();
+  renderTabs();
+  renderTable();
+  for (const w of report.warnings) say(esc(w));
+  el("tabs").querySelectorAll(".tab").forEach((b) => {
+    b.addEventListener("click", () => { activeTab = b.dataset.tab; renderTabs(); renderTable();
+      el("tabs").querySelectorAll(".tab").forEach((x) => x.classList.toggle("on", x.dataset.tab === activeTab));
+      renderTabs(); wireTabs(); });
+  });
+}
+
+function wireTabs() {
+  el("tabs").querySelectorAll(".tab").forEach((b) => {
+    b.onclick = () => { activeTab = b.dataset.tab; renderTabs(); wireTabs(); renderTable(); };
+  });
+}
+
+el("find").addEventListener("input", () => renderTable());
+
 el("run").addEventListener("click", () => {
   clearMessages();
-  say("Reader is in place. The analysis engine lands in the next commit.");
+  try {
+    const now = new Date();
+    const todayN = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY;
+    report = buildReport(state.attendance, state.roster, todayN);
+    el("log").textContent = "";
+    render();
+    wireTabs();
+  } catch (err) {
+    say("Analysis failed: " + esc(err.message), "error");
+    throw err;
+  }
 });
 
-window.__mt = { readSheet, readDirectory, state };
+window.__mt = { readSheet, readDirectory, state, buildReport, roundHours, parseDate, inferSchedule, settle,
+                get report() { return report; } };
 </script>
 </body>
 </html>
