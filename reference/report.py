@@ -33,6 +33,15 @@ class StudentReport:
 
     @property
     def on_hold(self) -> bool:
+        """Held right now, which is what the On hold list means.
+
+        Driven by the current month rather than by roster status, so a hold entered by
+        hand puts the student on the list. Reading roster status alone left a student you
+        had just told the tool was on hold invisible from the On hold tab.
+        """
+        current = self.current
+        if current is not None:
+            return current.on_hold
         return bool(self.record and self.record.on_hold)
 
     @property

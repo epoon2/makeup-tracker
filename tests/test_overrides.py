@@ -75,3 +75,27 @@ def test_overrides_round_trip_through_a_file():
     assert b.not_enrolled == {"2026-06"}
     assert b.weekdays == (0, 2)
     assert b.note.startswith("moved")
+
+
+def test_a_hold_on_the_current_month_puts_the_student_on_the_hold_list():
+    """Regression: the On hold list read roster status, so a hold entered by hand left the
+    student invisible from the tab that exists to show held students."""
+    import datetime as dt
+    from reference.loaders import load
+    from reference.report import build
+    from reference.overrides import Hold, Overrides
+
+    loaded = load("testdata/attendance.xlsx", "testdata/students.xlsx")
+    today = dt.date(2026, 8, 19)
+    base = build(loaded, today)
+    target = base.behind_pace[0]
+
+    o = Overrides()
+    o.get(target.key).holds.append(Hold("2026-08"))
+    after = build(loaded, today, o)
+    found = next(s for s in after.students if s.key == target.key)
+
+    assert found.on_hold is True
+    assert found.current.required == 0
+    assert any(s.key == target.key for s in after.held)
+    assert not any(s.key == target.key for s in after.behind_pace)

@@ -82,7 +82,7 @@
   .dates { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; }
   .empty { color: var(--muted); padding: 26px 4px; text-align: center; }
   .hrow { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
-  .finder { position: relative; min-width: 300px; }
+  .finder { position: relative; }
   .finder input { width: 100%; font: inherit; font-size: 14px; padding: 9px 13px;
                   border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
   .finder input:focus { outline: 2px solid #cfe0f7; border-color: var(--accent); background: var(--panel); }
@@ -115,16 +115,8 @@
 </head>
 <body>
 <header>
-  <div class="hrow">
-    <div>
-      <h1>Makeup Hours — Mathnasium Temple City</h1>
-      <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
-    </div>
-    <div class="finder" id="finder" hidden>
-      <input type="search" id="globalFind" placeholder="Search students    /" autocomplete="off" spellcheck="false">
-      <div class="hits" id="findHits" hidden></div>
-    </div>
-  </div>
+  <h1>Makeup Hours — Mathnasium Temple City</h1>
+  <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
 </header>
 
 <main>
@@ -165,7 +157,11 @@
     </div>
     <div class="cards" id="cards"></div>
     <div class="panel">
-      <div class="row" style="justify-content:space-between">
+      <div class="finder" id="finder">
+        <input type="search" id="globalFind" placeholder="Search any student by name    press /" autocomplete="off" spellcheck="false">
+        <div class="hits" id="findHits" hidden></div>
+      </div>
+      <div class="row" style="justify-content:space-between; margin-top:14px">
         <div class="tabs" id="tabs"></div>
         <div class="toolbar">
           <button class="ghost" id="clearFocus" hidden>Show everyone</button>
@@ -1075,7 +1071,9 @@ function buildReport(attendance, roster, todayN) {
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
       plan, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over,
-      onHold: !!(rec && rec.onHold),
+      // Held right now, which is what the On hold list means. Driven by the current
+      // month rather than roster status, so a hold entered by hand lands on the list.
+      onHold: current ? current.onHold : !!(rec && rec.onHold),
       owed: ledger.owed,
       toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
       missed: months.flatMap((mo) => mo.missed).sort((a, b) => a - b),
@@ -1161,12 +1159,14 @@ function buildQuestions(rep) {
       out.push({
         key: s.key, id, who: s.display,
         ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
-             "Right now that is charged as " + mo.required + " makeup hrs. Which was it?",
+             "Right now that is charged as " + mo.required + " makeup hrs. Which was it? " +
+             "On hold also covers every month after this one until an export shows them enrolled again; " +
+             "not enrolled applies to " + mo.label + " on its own.",
         options: [
-          { label: "On hold that month", suggest: likelyHold, apply: () => {
+          { label: "On hold from " + monthLabel(mk), suggest: likelyHold, apply: () => {
               ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
           { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
-          { label: "Not enrolled that month", apply: () => {
+          { label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
               ovFor(s.key, true).notEnrolled.push(mk); } },
         ],
       });
@@ -1317,7 +1317,7 @@ function rerun() {
 --------------------------------------------------------------------------- */
 
 let report = null;
-let activeTab = "owing";
+let activeTab = "all";
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -1339,12 +1339,14 @@ function renderCards() {
     card(flagged, "hrs need checking", "whole-month absences we could not confirm");
 }
 
+// All students first and selected by default: opening on a filtered list makes the tool
+// look like it only found 159 people.
 const TABS = [
+  ["all", "All students"],
   ["owing", "Owes hours"],
   ["behind", "Behind pace"],
   ["held", "On hold"],
   ["never", "Never attended"],
-  ["all", "All students"],
 ];
 
 function rowsFor(tab) {
@@ -1464,7 +1466,6 @@ function renderTable() {
 
 function render() {
   el("results").hidden = false;
-  el("finder").hidden = false;
   el("stamp").className = "stamp live";
   el("stamp").textContent = "Calculating " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
                             "  ·  last attendance " + fmtLong(report.dataThrough) +
