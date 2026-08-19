@@ -82,12 +82,11 @@ def settle(months: list[MonthResult]) -> Settlement:
                 debt.expired = True
                 result.expired_hours += debt.outstanding
 
-        if month.on_hold:
-            continue
-
         if month.is_current:
             continue
 
+        # A held month requires nothing, so everything attended in it is excess and pays
+        # down earlier debt. That is the point of coming in while on hold.
         shortfall = month.shortfall
         excess = max(0, month.attended - month.required)
 
@@ -103,7 +102,7 @@ def settle(months: list[MonthResult]) -> Settlement:
                 result.payments.append((month.label, debt.label, applied))
             result.unused_excess += excess
 
-        if shortfall:
+        if shortfall and not month.on_hold:
             result.debts.append(
                 Debt(
                     year=month.year,

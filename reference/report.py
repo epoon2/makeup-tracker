@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from .loaders import Loaded, RosterRecord
 from .ledger import Settlement, settle
 from .months import UNVERIFIABLE, MonthResult, build_month, month_bounds, months_between
+from .overrides import Overrides, month_key
 from .schedule import Schedule, infer, infer_for_month
 
 
@@ -108,8 +109,10 @@ def _display(key: str) -> str:
     return f"{first.title()} {last.title()}".strip()
 
 
-def build(loaded: Loaded, today: dt.date | None = None) -> Report:
+def build(loaded: Loaded, today: dt.date | None = None,
+          overrides: Overrides | None = None) -> Report:
     today = today or dt.date.today()
+    overrides = overrides or Overrides()
     if not loaded.visits:
         raise ValueError("attendance export contained no usable rows")
 
@@ -125,13 +128,35 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
     for key, visits in by_student.items():
         plan = next((v.sessions_per_month for v in visits if v.sessions_per_month), 8)
         record = loaded.roster.get(key)
+        over = overrides.peek(key)
+
+        # An export showing the student enrolled closes any open hold, dated by the month
+        # the export covers rather than by today, so re-running an old export cannot
+        # rewrite what a newer one already settled.
+        if over and record and record.status.casefold() == "enrolled":
+            overrides.close_holds(key, month_key(data_through.year, data_through.month))
+
         months = []
         schedules: dict[tuple[int, int], Schedule] = {}
         for (y, m) in span:
             first, last = month_bounds(y, m)
-            schedules[(y, m)] = infer_for_month(visits, plan, first, last)
+            mk = month_key(y, m)
+            sched = infer_for_month(visits, plan, first, last)
+            if over and over.weekdays:
+                sched = Schedule(
+                    tuple(sorted(over.weekdays)),
+                    over.session_hours or sched.session_hours,
+                    True,
+                    "set by hand",
+                )
+            schedules[(y, m)] = sched
             months.append(
-                build_month(y, m, visits, schedules[(y, m)], plan, record, today, data_through)
+                build_month(
+                    y, m, visits, sched, plan, record, today, data_through,
+                    on_hold=over.held(mk) if over else None,
+                    plan_override=(over.plan_hours.get(mk) if over else None),
+                    force_not_enrolled=bool(over and mk in over.not_enrolled),
+                )
             )
         # The student-level schedule is the one that applied most recently, since that is
         # what a person looking at the row wants to know. Earlier months keep their own.
@@ -149,6 +174,8 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
         )
         if not schedule.confident:
             report.flags.append(f"schedule uncertain: {schedule.reason}")
+        if over and over.note:
+            report.flags.append(f"note: {over.note}")
         if record and record.ambiguous:
             report.flags.append("more than one roster record under this name")
         if record is None:
