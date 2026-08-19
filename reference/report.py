@@ -1,0 +1,164 @@
+"""Assemble the per-student report from the month results and the ledger."""
+
+from __future__ import annotations
+
+import collections
+import datetime as dt
+from dataclasses import dataclass, field
+
+from .loaders import Loaded, RosterRecord
+from .ledger import Settlement, settle
+from .months import UNVERIFIABLE, MonthResult, build_month, months_between
+from .schedule import Schedule, infer
+
+
+@dataclass
+class StudentReport:
+    key: str
+    display: str
+    student_id: str
+    plan_hours: int
+    schedule: Schedule
+    months: list[MonthResult]
+    settlement: Settlement
+    record: RosterRecord | None
+    flags: list[str] = field(default_factory=list)
+
+    @property
+    def owed(self) -> int:
+        return self.settlement.owed
+
+    @property
+    def on_hold(self) -> bool:
+        return bool(self.record and self.record.on_hold)
+
+    @property
+    def current(self) -> MonthResult | None:
+        return next((m for m in self.months if m.is_current), None)
+
+    @property
+    def to_schedule_now(self) -> int:
+        """Hours to book for the current month so it lands on the requirement."""
+        cur = self.current
+        if cur is None or cur.on_hold:
+            return 0
+        return max(0, cur.required - cur.projected)
+
+    @property
+    def missed_dates(self) -> list[dt.date]:
+        out: list[dt.date] = []
+        for month in self.months:
+            out.extend(month.missed_dates)
+        return sorted(out)
+
+
+@dataclass
+class Report:
+    generated_for: dt.date
+    data_through: dt.date
+    months: list[tuple[int, int]]
+    students: list[StudentReport]
+    never_attended: list[RosterRecord]
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def owing(self) -> list[StudentReport]:
+        return sorted(
+            (s for s in self.students if s.owed > 0 and not s.on_hold),
+            key=lambda s: (-s.owed, s.display),
+        )
+
+    @property
+    def behind_pace(self) -> list[StudentReport]:
+        return sorted(
+            (s for s in self.students if s.to_schedule_now > 0 and not s.on_hold),
+            key=lambda s: (-s.to_schedule_now, s.display),
+        )
+
+    @property
+    def held(self) -> list[StudentReport]:
+        return sorted((s for s in self.students if s.on_hold), key=lambda s: s.display)
+
+
+def _display(key: str) -> str:
+    first, _, last = key.partition("\x1f")
+    return f"{first.title()} {last.title()}".strip()
+
+
+def build(loaded: Loaded, today: dt.date | None = None) -> Report:
+    today = today or dt.date.today()
+    if not loaded.visits:
+        raise ValueError("attendance export contained no usable rows")
+
+    data_through = max(v.date for v in loaded.visits)
+    first_visit = min(v.date for v in loaded.visits)
+    span = months_between(first_visit, today)
+
+    by_student: dict[str, list] = collections.defaultdict(list)
+    for visit in loaded.visits:
+        by_student[visit.key].append(visit)
+
+    students: list[StudentReport] = []
+    for key, visits in by_student.items():
+        plan = next((v.sessions_per_month for v in visits if v.sessions_per_month), 8)
+        schedule = infer(visits, plan)
+        record = loaded.roster.get(key)
+        months = [
+            build_month(y, m, visits, schedule, plan, record, today, data_through)
+            for (y, m) in span
+        ]
+        report = StudentReport(
+            key=key,
+            display=_display(key),
+            student_id=record.student_id if record else "",
+            plan_hours=plan,
+            schedule=schedule,
+            months=months,
+            settlement=settle(months),
+            record=record,
+        )
+        if not schedule.confident:
+            report.flags.append(f"schedule uncertain: {schedule.reason}")
+        if record and record.ambiguous:
+            report.flags.append("more than one roster record under this name")
+        if record is None:
+            report.flags.append("no roster record matched")
+        for month in months:
+            if month.absent_whole_month and month.absence_basis == UNVERIFIABLE:
+                report.flags.append(
+                    f"{month.required} hrs granted for {month.label}; enrollment that month unconfirmed"
+                )
+        students.append(report)
+
+    attended_keys = set(by_student)
+    never = [
+        record
+        for key, record in loaded.roster.items()
+        if key not in attended_keys and record.active
+    ]
+    never.sort(key=lambda r: _display(r.key))
+
+    warnings = list(loaded.warnings)
+    span_start = span[0]
+    wanted_start = (today.year, today.month - 2) if today.month > 2 else (today.year - 1, today.month + 10)
+    if span_start > wanted_start:
+        warnings.append(
+            f"attendance export starts {first_visit:%-m/%-d/%Y}. The grace window looks back "
+            f"two calendar months, so re-export from {wanted_start[0]}-{wanted_start[1]:02d}-01 "
+            "to see everything still payable."
+        )
+    unconfident = sum(1 for s in students if not s.schedule.confident)
+    if unconfident:
+        warnings.append(
+            f"{unconfident} of {len(students)} schedules could not be inferred confidently; "
+            "their missed dates and behind-pace flags are estimates"
+        )
+
+    return Report(
+        generated_for=today,
+        data_through=data_through,
+        months=span,
+        students=students,
+        never_attended=never,
+        warnings=warnings,
+    )
