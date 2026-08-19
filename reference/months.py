@@ -40,6 +40,8 @@ class MonthResult:
     on_hold: bool = False
     is_current: bool = False
     projected: int = 0
+    granted: int = 0
+    remaining_sessions: int = 0
     note: str = ""
 
     @property
@@ -143,10 +145,15 @@ def build_month(
         # so it can be booked before the month ends instead of discovered afterwards.
         remaining = [d for d in result.scheduled_dates if d > horizon]
         result.projected = attended + len(remaining) * schedule.session_hours
-        if result.projected < result.required:
+        result.remaining_sessions = len(remaining)
+        # What is short after projecting the rest of the month is granted as makeups now,
+        # so it can be booked before the month closes. It shrinks on its own as they
+        # attend, because the projection is recomputed every run.
+        result.granted = max(0, result.required - result.projected)
+        if result.granted:
             result.note = (
-                f"not on track: {result.projected} of {result.required} hrs projected "
-                f"with {len(remaining)} session(s) left"
+                f"{result.granted} makeup hr(s) for {result.label}: {result.projected} of "
+                f"{result.required} hrs projected with {len(remaining)} session(s) left"
             )
         return result
 

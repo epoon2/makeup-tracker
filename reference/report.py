@@ -171,6 +171,15 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
             f"only {len(elapsed)} completed month(s) of attendance are available, so the "
             "two-month grace window cannot settle debt against a later month yet"
         )
+    shaky_grant = sum(
+        s.current.granted for s in students if s.current and not s.schedule.confident
+    )
+    total_grant = sum(s.current.granted for s in students if s.current)
+    if shaky_grant:
+        warnings.append(
+            f"{shaky_grant} of {total_grant} makeup hrs granted for the current month rest on a "
+            "schedule that could not be inferred confidently; check those before booking"
+        )
     unconfident = sum(1 for s in students if not s.schedule.confident)
     if unconfident:
         warnings.append(
