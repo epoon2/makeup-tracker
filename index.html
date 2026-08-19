@@ -475,7 +475,11 @@ function normalise(attendance, roster) {
       onHold: status.toLowerCase() === "on hold",
       ambiguous: false,
     };
+    // active: on the roster in some live capacity, used only to pick between two records
+    // sharing a name. expected: should be attending right now, so an absence is worth
+    // chasing. Only Enrolled qualifies; New and Pre-Enrolled have often not started.
     rec.active = ACTIVE.has(status.toLowerCase()) || rec.onHold;
+    rec.expected = status.toLowerCase() === "enrolled";
     const seen = people.get(key);
     if (!seen) { people.set(key, rec); continue; }
     clash.add(key);
@@ -755,7 +759,7 @@ function buildReport(attendance, roster, todayN) {
 
   const attendedKeys = new Set(grouped.keys());
   const neverAttended = [...people.values()]
-    .filter((r) => !attendedKeys.has(r.key) && r.active)
+    .filter((r) => !attendedKeys.has(r.key) && r.expected)
     .sort((a, b) => displayName(a.key).localeCompare(displayName(b.key)));
 
   const elapsed = span.filter(([y, m]) => !(y === today.y && m === today.m));

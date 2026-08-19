@@ -117,7 +117,19 @@ class RosterRecord:
 
     @property
     def active(self) -> bool:
+        """Broad sense: on the roster in some live capacity. Used to pick between two
+        records that share a name, not to decide who owes anything."""
         return self.status.casefold() in ACTIVE_STATUSES or self.on_hold
+
+    @property
+    def expected(self) -> bool:
+        """Narrow sense: should be attending right now, so an absence is worth chasing.
+
+        Only 'Enrolled'. New and Pre-Enrolled students have often not started yet, and a
+        list that mixes them in reads as 30-odd false alarms, which is how a report stops
+        being used.
+        """
+        return self.status.casefold() == "enrolled"
 
 
 @dataclass
