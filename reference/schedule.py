@@ -99,6 +99,53 @@ def infer(visits: list[Visit], required_hours: int) -> Schedule:
     return Schedule(chosen, session_hours, True, "inferred from attendance history")
 
 
+def infer_for_month(
+    visits: list[Visit],
+    required_hours: int,
+    first: dt.date,
+    last: dt.date,
+) -> Schedule:
+    """Infer the schedule that applied during one month, not across the whole export.
+
+    Schedules change. A student who moved from Tue/Thu to Mon/Wed in August has an August
+    that a whole-window inference reads as four scattered days, which then invents missed
+    sessions in both months. Judging each month on its own data fixes that, and measured
+    against students who fully met July it is the best of the options tried.
+
+    A month with thin attendance cannot support its own inference, so it widens to include
+    everything up to the end of that month before falling back to the whole record. The
+    widening is backwards only: later months must not decide what an earlier month's
+    schedule was.
+    """
+    in_month = [v for v in visits if first <= v.date <= last and v.hours > 0]
+    weeks = len({(v.date.isocalendar()[0], v.date.isocalendar()[1]) for v in in_month})
+    if weeks >= 3:
+        return infer(in_month, required_hours)
+
+    upto = [v for v in visits if v.date <= last and v.hours > 0]
+    if not upto:
+        return infer(visits, required_hours)
+
+    widened = infer(upto, required_hours)
+    if not in_month:
+        return widened
+
+    # The month is too short to stand alone, which is normal for the current month and
+    # not by itself a reason to distrust the answer. What matters is whether the month's
+    # own days agree with the wider history. Agreement means the schedule is steady and
+    # the short month is simply confirming it; disagreement means it moved, and that is
+    # the case worth flagging.
+    month_only = infer(in_month, required_hours)
+    if set(month_only.weekdays) == set(widened.weekdays):
+        return widened
+    widened.confident = False
+    widened.reason = (
+        f"only {weeks} week(s) attended this month, and those days "
+        f"({month_only.label()}) differ from the earlier pattern ({widened.label()})"
+    )
+    return widened
+
+
 def scheduled_dates(schedule: Schedule, first: dt.date, last: dt.date) -> list[dt.date]:
     """Every date in [first, last] falling on one of the student's scheduled weekdays."""
     if not schedule.weekdays:

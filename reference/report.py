@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 
 from .loaders import Loaded, RosterRecord
 from .ledger import Settlement, settle
-from .months import UNVERIFIABLE, MonthResult, build_month, months_between
-from .schedule import Schedule, infer
+from .months import UNVERIFIABLE, MonthResult, build_month, month_bounds, months_between
+from .schedule import Schedule, infer, infer_for_month
 
 
 @dataclass
@@ -21,6 +21,7 @@ class StudentReport:
     plan_hours: int
     schedule: Schedule
     months: list[MonthResult]
+    schedules: dict
     settlement: Settlement
     record: RosterRecord | None
     flags: list[str] = field(default_factory=list)
@@ -123,12 +124,18 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
     students: list[StudentReport] = []
     for key, visits in by_student.items():
         plan = next((v.sessions_per_month for v in visits if v.sessions_per_month), 8)
-        schedule = infer(visits, plan)
         record = loaded.roster.get(key)
-        months = [
-            build_month(y, m, visits, schedule, plan, record, today, data_through)
-            for (y, m) in span
-        ]
+        months = []
+        schedules: dict[tuple[int, int], Schedule] = {}
+        for (y, m) in span:
+            first, last = month_bounds(y, m)
+            schedules[(y, m)] = infer_for_month(visits, plan, first, last)
+            months.append(
+                build_month(y, m, visits, schedules[(y, m)], plan, record, today, data_through)
+            )
+        # The student-level schedule is the one that applied most recently, since that is
+        # what a person looking at the row wants to know. Earlier months keep their own.
+        schedule = schedules[span[-1]]
         report = StudentReport(
             key=key,
             display=_display(key),
@@ -136,6 +143,7 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
             plan_hours=plan,
             schedule=schedule,
             months=months,
+            schedules=schedules,
             settlement=settle(months),
             record=record,
         )
