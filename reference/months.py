@@ -90,15 +90,25 @@ def build_month(
     record: RosterRecord | None,
     today: dt.date,
     data_through: dt.date | None = None,
+    on_hold: bool | None = None,
+    plan_override: int | None = None,
+    force_not_enrolled: bool = False,
 ) -> MonthResult:
     first, last = month_bounds(year, month)
     is_current = (year, month) == (today.year, today.month)
 
+    if plan_override is not None:
+        plan_hours = plan_override
+
     in_month = [v for v in visits if first <= v.date <= last]
     attended = sum(v.hours for v in in_month)
 
-    # Hold freezes the month rather than accruing debt against it.
-    on_hold = bool(record and record.on_hold)
+    # A hold covers whole calendar months only: nobody is on hold for half a month. It
+    # freezes the requirement rather than accruing debt. Attendance during a held month
+    # still counts, because a student on hold can come in to burn off makeups they
+    # already owed.
+    if on_hold is None:
+        on_hold = bool(record and record.on_hold)
 
     active_from, active_to = first, last
     if record and record.start and record.start > first:
@@ -136,7 +146,15 @@ def build_month(
 
     if on_hold:
         result.required = 0
-        result.note = "on hold, debt frozen"
+        result.note = (
+            f"on hold for {result.label}, nothing owed for it"
+            + (f"; {attended} hr(s) attended count toward earlier debt" if attended else "")
+        )
+        return result
+
+    if force_not_enrolled:
+        result.required = 0
+        result.note = f"not enrolled during {result.label}, no makeups owed"
         return result
 
     if is_current:
