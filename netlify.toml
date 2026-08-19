@@ -1,0 +1,20 @@
+# Static site. There is no build step: index.html is the whole tool and everything it
+# needs is inline.
+[build]
+  publish = "."
+  command = ""
+
+# The page must never be able to send anything anywhere. Student data is read from files
+# the user picks and stays in their browser, and the headers below make that a property
+# the browser enforces rather than a promise in a README.
+#
+# connect-src 'none' is the important one: no fetch, no XHR, no WebSocket, no beacon.
+# If a future change tried to POST a roster somewhere, the browser would block it.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+    Cross-Origin-Opener-Policy = "same-origin"

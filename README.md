@@ -127,6 +127,22 @@ Answers save automatically and an answered question does not come back. **Save a
 a file** writes a small JSON file; **Load answers** merges one back in rather than
 replacing, so loading a colleague's copy cannot silently drop answers given here.
 
+## Hosting it
+
+`index.html` is the whole tool, so any static host works and there is no build step.
+`netlify.toml` sets the publish directory to the repo root and adds security headers.
+
+**The page cannot send anything anywhere, and that is enforced rather than promised.** A
+Content Security Policy with `connect-src 'none'` blocks fetch, XHR, WebSocket and beacon
+outright, so a future change that tried to POST a roster somewhere would be stopped by the
+browser. The policy sits in both `netlify.toml` and a `<meta>` tag inside the page itself,
+because a server can add headers and a file on a USB stick cannot — the guarantee has to
+survive being emailed.
+
+Verified with the deployed headers in force and every outbound request blocked: the report
+runs, the exports are remembered across a reload, the Excel download works, and an attempt
+to `fetch()` an external URL is refused. Same result opening the file directly from disk.
+
 ## Not in scope
 
 Real exports are never committed. They carry personal data for roughly 400 minors, so
