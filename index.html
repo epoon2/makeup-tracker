@@ -81,6 +81,21 @@
   .detail dd { margin: 0; font-size: 13px; }
   .dates { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; }
   .empty { color: var(--muted); padding: 26px 4px; text-align: center; }
+  .q { border-top: 1px solid #eef1f5; padding: 12px 2px; }
+  .q:first-child { border-top: 0; }
+  .q .who { font-weight: 600; }
+  .q .ask { color: var(--muted); font-size: 13.5px; margin: 2px 0 8px; }
+  .q .opts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .q button { padding: 6px 12px; font-size: 13px; font-weight: 600; }
+  .q button.sugg { position: relative; }
+  .q button.sugg::after { content: "likely"; position: absolute; top: -8px; right: -6px;
+    background: var(--ok); color: #fff; font-size: 9.5px; padding: 1px 5px; border-radius: 999px; }
+  .days { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+  /* An explicit display rule beats the hidden attribute, so restore it. */
+  .days[hidden] { display: none; }
+  .days label { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-size: 12.5px;
+                cursor: pointer; background: var(--panel); }
+  .days input { margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -114,6 +129,17 @@
   </div>
 
   <div id="results" hidden>
+    <div class="panel" id="queuePanel" hidden>
+      <div class="row" style="justify-content:space-between">
+        <div><b id="queueTitle"></b> <span class="sub" id="queueSub"></span></div>
+        <div class="toolbar">
+          <button class="ghost" id="exportAnswers">Save answers to a file</button>
+          <button class="ghost" id="importAnswers">Load answers</button>
+          <button class="ghost" id="clearAnswers">Clear answers</button>
+        </div>
+      </div>
+      <div id="queueList"></div>
+    </div>
     <div class="cards" id="cards"></div>
     <div class="panel">
       <div class="row" style="justify-content:space-between">
@@ -129,6 +155,7 @@
 </main>
 
 <input type="file" id="picker" accept=".xlsx" hidden>
+<input type="file" id="answerPicker" accept=".json" hidden>
 
 <script>
 "use strict";
@@ -440,6 +467,10 @@ async function accept(file, which) {
 
 async function restoreSaved() {
   try {
+    const saved = await dbGet("overrides");
+    if (saved && saved.students) overrides = saved;
+  } catch (e) { /* storage refused; carry on with none */ }
+  try {
     const [att, ros] = await Promise.all([dbGet("attendance"), dbGet("roster")]);
     for (const [which, saved] of [["attendance", att], ["roster", ros]]) {
       if (!saved || !saved.bytes) continue;
@@ -734,18 +765,80 @@ function resolveAbsence(rec, visitDays, first, last) {
 }
 
 /* ---------------------------------------------------------------------------
+   Overrides: the things the exports cannot tell us.
+
+   Radius gives a snapshot and a visit log. It cannot say when a hold started, why a
+   month is empty, or that a student was sold four sessions this month instead of eight.
+   Those take a person a second each, so the tool asks and keeps the answer.
+
+   Everything here is scoped to whole calendar months. Holds especially: nobody is on
+   hold for half a month.
+--------------------------------------------------------------------------- */
+
+let overrides = { version: 1, students: {} };
+
+const monthKey = (y, m) => y + "-" + String(m).padStart(2, "0");
+const mkIndex = (key) => { const [y, m] = key.split("-").map(Number); return y * 12 + m - 1; };
+const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return MON_ABBR[m - 1] + " " + y; };
+
+function ovFor(key, create) {
+  let rec = overrides.students[key];
+  if (!rec && create) {
+    rec = overrides.students[key] = { holds: [], planHours: {}, notEnrolled: [], weekdays: null, sessionHours: null, note: "", answered: [] };
+  }
+  return rec || null;
+}
+
+function holdCovers(hold, mk) {
+  if (mkIndex(mk) < mkIndex(hold.start)) return false;
+  return !hold.until || mkIndex(mk) < mkIndex(hold.until);
+}
+
+function isHeld(rec, mk) { return !!(rec && rec.holds.some((h) => holdCovers(h, mk))); }
+
+function closeHolds(key, enrolledIn) {
+  // An export showing the student enrolled ends an open hold. Dated by the month the
+  // export covers, not today, so re-running an older export cannot rewrite what a newer
+  // one already settled. A hold entered for August, with an export on 3 Oct showing them
+  // enrolled, means August and September held and October not.
+  const rec = overrides.students[key];
+  if (!rec) return false;
+  let changed = false;
+  for (const hold of rec.holds) {
+    if (hold.until) continue;
+    if (mkIndex(enrolledIn) > mkIndex(hold.start)) {
+      hold.until = enrolledIn;
+      hold.source = "closed by export";
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+async function saveOverrides() {
+  try { await dbPut("overrides", overrides); } catch (e) { storageWorks = false; }
+}
+
+/* ---------------------------------------------------------------------------
    Per-month accounting
 --------------------------------------------------------------------------- */
 
-function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN) {
+function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN, over) {
   const first = mkDate(y, m, 1).n;
   const last = mkDate(y, m, lastDayOf(y, m)).n;
   const today = fromDayNumber(todayN);
   const isCurrent = y === today.y && m === today.m;
+  const mk = monthKey(y, m);
+
+  if (over && over.planHours[mk] != null) planHours = over.planHours[mk];
 
   const inMonth = visits.filter((v) => v.date.n >= first && v.date.n <= last);
   const attended = inMonth.reduce((sum, v) => sum + v.hours, 0);
-  const onHold = !!(rec && rec.onHold);
+  // Whole months only. A held month owes nothing, but hours attended during it still pay
+  // down earlier debt, because coming in while on hold is how a student burns off what
+  // they already owed.
+  const onHold = over ? isHeld(over, mk) : !!(rec && rec.onHold);
+  const forcedNotEnrolled = !!(over && over.notEnrolled.includes(mk));
 
   let activeFrom = first, activeTo = last;
   if (rec && rec.start && rec.start.n > first) activeFrom = rec.start.n;
@@ -776,7 +869,18 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   out.scheduled = scheduledDates(schedule, Math.max(first, activeFrom), Math.min(last, activeTo));
   out.missed = out.scheduled.filter((n) => n <= horizon && !attendedDays.has(n));
 
-  if (onHold) { out.required = 0; out.note = "on hold, debt frozen"; return out; }
+  if (onHold) {
+    out.required = 0;
+    out.note = "on hold for " + out.label + ", nothing owed for it" +
+               (attended ? "; " + attended + " hr(s) attended count toward earlier debt" : "");
+    return out;
+  }
+
+  if (forcedNotEnrolled) {
+    out.required = 0;
+    out.note = "not enrolled during " + out.label + ", no makeups owed";
+    return out;
+  }
 
   if (isCurrent) {
     const remaining = out.scheduled.filter((n) => n > horizon);
@@ -833,8 +937,10 @@ function settle(months) {
         expired += debt.outstanding;
       }
     }
-    if (month.onHold || month.isCurrent) continue;
+    if (month.isCurrent) continue;
 
+    // A held month requires nothing, so everything attended in it is excess and pays down
+    // earlier debt. That is the point of coming in while on hold.
     let excess = Math.max(0, month.attended - month.required);
     if (excess) {
       for (const debt of debts) {
@@ -848,7 +954,7 @@ function settle(months) {
       unused += excess;
     }
     const shortfall = Math.max(0, month.required - month.attended);
-    if (shortfall) {
+    if (shortfall && !month.onHold) {
       debts.push({
         y: month.y, m: month.m, hours: shortfall, outstanding: shortfall, expired: false,
         label: MON_ABBR[month.m - 1] + " " + month.y,
@@ -885,6 +991,8 @@ function buildReport(attendance, roster, todayN) {
   const dataThroughN = Math.max(...visits.map((v) => v.date.n));
   const firstN = Math.min(...visits.map((v) => v.date.n));
   const today = fromDayNumber(todayN);
+  const dataThrough = fromDayNumber(dataThroughN);
+  let holdsClosed = 0;
   const firstDate = fromDayNumber(firstN);
 
   const span = [];
@@ -903,13 +1011,24 @@ function buildReport(attendance, roster, todayN) {
   for (const [key, list] of grouped) {
     const plan = (list.find((v) => v.spm) || {}).spm || 8;
     const rec = people.get(key) || null;
+    const over = ovFor(key, false);
+
+    if (over && rec && rec.status.toLowerCase() === "enrolled") {
+      if (closeHolds(key, monthKey(dataThrough.y, dataThrough.m))) holdsClosed++;
+    }
+
     const schedules = {};
     const months = span.map(([y, m]) => {
       const firstN = mkDate(y, m, 1).n;
       const lastN = mkDate(y, m, lastDayOf(y, m)).n;
-      const s = inferScheduleForMonth(list, plan, firstN, lastN);
+      let s = inferScheduleForMonth(list, plan, firstN, lastN);
+      if (over && over.weekdays) {
+        s = { weekdays: [...over.weekdays].sort((a, b) => a - b),
+              sessionHours: over.sessionHours || s.sessionHours,
+              confident: true, reason: "set by hand" };
+      }
       schedules[y + "-" + m] = s;
-      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN);
+      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN, over);
     });
     // The student-level schedule is the one that applied most recently, since that is what
     // someone reading the row wants. Earlier months keep their own.
@@ -918,6 +1037,7 @@ function buildReport(attendance, roster, todayN) {
     const current = months.find((mo) => mo.isCurrent) || null;
     const flags = [];
     if (!schedule.confident) flags.push("schedule uncertain: " + schedule.reason);
+    if (over && over.note) flags.push("note: " + over.note);
     if (rec && rec.ambiguous) flags.push("more than one roster record under this name");
     if (!rec) flags.push("no roster record matched");
     for (const mo of months) {
@@ -931,7 +1051,7 @@ function buildReport(attendance, roster, todayN) {
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, schedule, schedules, months, ledger, rec, flags, current, attendedDates,
+      plan, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over,
       onHold: !!(rec && rec.onHold),
       owed: ledger.owed,
       toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
@@ -959,13 +1079,203 @@ function buildReport(attendance, roster, todayN) {
   }
 
   const win = payableWindow(firstN, dataThroughN);
+  if (holdsClosed) {
+    warnings.push(holdsClosed + " hold(s) ended automatically because this export shows those students enrolled again");
+    saveOverrides();
+  }
   return {
-    today, dataThrough: fromDayNumber(dataThroughN), span, students, neverAttended, warnings,
+    today, dataThrough, span, students, neverAttended, warnings,
     windowFrom: fromDayNumber(win.fromN), windowTo: fromDayNumber(win.toN),
     owing: students.filter((s) => s.owed > 0 && !s.onHold).sort((a, b) => b.owed - a.owed || a.display.localeCompare(b.display)),
     behind: students.filter((s) => s.toSchedule > 0 && !s.onHold).sort((a, b) => b.toSchedule - a.toSchedule || a.display.localeCompare(b.display)),
     held: students.filter((s) => s.onHold).sort((a, b) => a.display.localeCompare(b.display)),
   };
+}
+
+/* ---------------------------------------------------------------------------
+   The review queue.
+
+   Not a blank form. The tool already knows what it is unsure about — schedules it had
+   to guess, months it could not explain — so it asks those as questions with a likely
+   answer marked, and keeps whatever comes back. Answering one is a click, and an
+   answered question does not return.
+--------------------------------------------------------------------------- */
+
+function markAnswered(key, id) {
+  const rec = ovFor(key, true);
+  if (!rec.answered.includes(id)) rec.answered.push(id);
+}
+
+function wasAnswered(key, id) {
+  const rec = ovFor(key, false);
+  return !!(rec && rec.answered.includes(id));
+}
+
+function gapLooksLikeAHold(student, mo) {
+  // A hold usually lines up with month boundaries: they attend to the end of the previous
+  // month, vanish for exactly this one, and come back at the start of the next. A holiday
+  // is raggeder than that. This is a guess and is labelled as one.
+  const first = mkDate(mo.y, mo.m, 1).n;
+  const last = mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n;
+  const before = student.attendedDates.filter((v) => v.n < first).map((v) => v.n);
+  const after = student.attendedDates.filter((v) => v.n > last).map((v) => v.n);
+  if (!before.length || !after.length) return false;
+  const endedLate = last - Math.max(...before) <= 38;
+  const resumedEarly = Math.min(...after) - last <= 10;
+  return endedLate && resumedEarly;
+}
+
+function buildQuestions(rep) {
+  const out = [];
+  for (const s of rep.students) {
+    // 1. A whole month with nothing recorded that the data could not explain.
+    for (const mo of s.months) {
+      if (!mo.absentWholeMonth || mo.basis !== UNVERIFIABLE) continue;
+      const mk = monthKey(mo.y, mo.m);
+      const id = "absent:" + mk;
+      if (wasAnswered(s.key, id) || (s.over && isHeld(s.over, mk))) continue;
+      const likelyHold = gapLooksLikeAHold(s, mo);
+      out.push({
+        key: s.key, id, who: s.display,
+        ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
+             "Right now that is charged as " + mo.required + " makeup hrs. Which was it?",
+        options: [
+          { label: "On hold that month", suggest: likelyHold, apply: () => {
+              ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
+          { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
+          { label: "Not enrolled that month", apply: () => {
+              ovFor(s.key, true).notEnrolled.push(mk); } },
+        ],
+      });
+    }
+
+    // 2. Stopped partway through an elapsed month and never came back.
+    const elapsed = s.months.filter((mo) => !mo.isCurrent);
+    const lastMonth = elapsed[elapsed.length - 1];
+    if (lastMonth && s.attendedDates.length) {
+      const lastVisit = s.attendedDates[s.attendedDates.length - 1].n;
+      const monthEnd = mkDate(lastMonth.y, lastMonth.m, lastDayOf(lastMonth.y, lastMonth.m)).n;
+      const stoppedEarly = lastVisit < monthEnd - 10 && lastVisit >= mkDate(lastMonth.y, lastMonth.m, 1).n;
+      const id = "stopped:" + monthKey(lastMonth.y, lastMonth.m);
+      const nextKey = lastMonth.m === 12 ? monthKey(lastMonth.y + 1, 1) : monthKey(lastMonth.y, lastMonth.m + 1);
+      if (stoppedEarly && lastMonth.shortfall > 0 && !wasAnswered(s.key, id) && !isHeld(s.over, nextKey)) {
+        out.push({
+          key: s.key, id, who: s.display,
+          ask: "Last came " + fmtLong(fromDayNumber(lastVisit)) + ", partway through " + lastMonth.label +
+               ", and is " + lastMonth.shortfall + " hrs short for it. Were they away, or did they go on hold?",
+          options: [
+            { label: "Away — still owes " + lastMonth.shortfall + " hrs", suggest: true, apply: () => {} },
+            { label: "On hold from " + monthLabel(nextKey), apply: () => {
+                ovFor(s.key, true).holds.push({ start: nextKey, until: null, source: "entered" }); } },
+            { label: "On hold from " + monthLabel(monthKey(lastMonth.y, lastMonth.m)), apply: () => {
+                ovFor(s.key, true).holds.push({ start: monthKey(lastMonth.y, lastMonth.m), until: null, source: "entered" }); } },
+          ],
+        });
+      }
+    }
+
+    // 3. A schedule the tool had to guess. This is the highest-leverage answer: the
+    // schedule drives missed dates and the current-month projection.
+    if (!s.schedule.confident && !s.over?.weekdays) {
+      const id = "schedule";
+      if (!wasAnswered(s.key, id)) {
+        const guessed = s.schedule.weekdays;
+        const alt = [];
+        for (const mo of s.months) {
+          const ms = s.schedules[mo.y + "-" + mo.m];
+          if (ms && ms.weekdays.join(",") !== guessed.join(",")) alt.push(ms.weekdays);
+        }
+        const options = [
+          { label: "Yes — " + scheduleLabel(s.schedule), suggest: true, apply: () => {
+              const r = ovFor(s.key, true); r.weekdays = [...guessed]; r.sessionHours = s.schedule.sessionHours; } },
+        ];
+        if (alt.length) {
+          const a = alt[0];
+          options.push({ label: "No — " + a.map((w) => WEEKDAYS[w]).join(", "), apply: () => {
+              const r = ovFor(s.key, true); r.weekdays = [...a]; r.sessionHours = s.schedule.sessionHours; } });
+        }
+        options.push({ label: "Pick days", picker: true });
+        out.push({
+          key: s.key, id, who: s.display,
+          ask: "Their " + s.plan + " hr plan needs a weekly pattern and this one had to be guessed (" +
+               s.schedule.reason + "). Is it " + scheduleLabel(s.schedule) + "?",
+          options,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+let queue = [];
+
+function renderQueue() {
+  queue = buildQuestions(report);
+  const panel = el("queuePanel");
+  const anyAnswers = Object.keys(overrides.students).length > 0;
+  panel.hidden = !queue.length && !anyAnswers;
+  if (panel.hidden) return;
+
+  el("queueTitle").textContent = queue.length
+    ? queue.length + " thing" + (queue.length === 1 ? "" : "s") + " the exports could not tell me"
+    : "Nothing left to confirm";
+  el("queueSub").textContent = anyAnswers
+    ? "· " + Object.keys(overrides.students).length + " student(s) have saved answers"
+    : "";
+
+  const list = el("queueList");
+  if (!queue.length) { list.innerHTML = '<div class="empty">All answered. Saved answers still apply.</div>'; return; }
+
+  list.innerHTML = queue.slice(0, 40).map((q, i) =>
+    '<div class="q"><div class="who">' + esc(q.who) + "</div>" +
+    '<div class="ask">' + esc(q.ask) + "</div>" +
+    '<div class="opts">' + q.options.map((o, j) =>
+      '<button class="ghost' + (o.suggest ? " sugg" : "") + '" data-q="' + i + '" data-o="' + j + '">' +
+      esc(o.label) + "</button>").join("") +
+    '<button class="ghost" data-q="' + i + '" data-o="skip">Skip</button></div>' +
+    (q.options.some((o) => o.picker)
+      ? '<div class="days" id="picker' + i + '" hidden>' +
+          WEEKDAYS.map((w, d) => '<label><input type="checkbox" value="' + d + '">' + w + "</label>").join("") +
+          ' <button data-save="' + i + '">Save days</button></div>'
+      : "") + "</div>"
+  ).join("") + (queue.length > 40 ? '<div class="ask" style="padding-top:10px">Showing 40 of ' + queue.length + '. Answer these and the next batch appears.</div>' : "");
+
+  list.querySelectorAll("button[data-q]").forEach((b) => {
+    b.onclick = async () => {
+      const q = queue[+b.dataset.q];
+      if (b.dataset.o === "skip") { markAnswered(q.key, q.id); }
+      else {
+        const opt = q.options[+b.dataset.o];
+        if (opt.picker) { const p = el("picker" + b.dataset.q); p.hidden = !p.hidden; return; }
+        opt.apply();
+        markAnswered(q.key, q.id);
+      }
+      await saveOverrides();
+      rerun();
+    };
+  });
+  list.querySelectorAll("button[data-save]").forEach((b) => {
+    b.onclick = async () => {
+      const i = +b.dataset.save, q = queue[i];
+      const days = [...el("picker" + i).querySelectorAll("input:checked")].map((c) => +c.value);
+      if (!days.length) return;
+      const r = ovFor(q.key, true);
+      r.weekdays = days;
+      r.sessionHours = report.students.find((s) => s.key === q.key)?.schedule.sessionHours || 1;
+      markAnswered(q.key, q.id);
+      await saveOverrides();
+      rerun();
+    };
+  });
+}
+
+function rerun() {
+  const now = new Date();
+  const todayN = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY;
+  clearMessages();
+  report = buildReport(state.attendance, state.roster, todayN);
+  render();
+  wireTabs();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1116,6 +1426,7 @@ function render() {
                             "  ·  last attendance " + fmtLong(report.dataThrough) +
                             "  ·  run " + fmtLong(report.today);
   renderCards();
+  renderQueue();
   renderTabs();
   renderTable();
   for (const w of report.warnings) say(esc(w));
@@ -1378,6 +1689,57 @@ el("forget").addEventListener("click", async () => {
   say("Stored exports erased from this machine.");
 });
 
+el("exportAnswers").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(overrides, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "makeup-answers.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+});
+
+// Bound once at load rather than assigned inside the click handler. A change event that
+// arrives before the button is ever pressed would otherwise be dropped on the floor.
+el("answerPicker").addEventListener("change", async () => {
+  const picker = el("answerPicker");
+  {
+    const file = picker.files[0];
+    picker.value = "";
+    if (!file) return;
+    try {
+      const loaded = JSON.parse(await file.text());
+      if (!loaded || typeof loaded !== "object" || !loaded.students) throw new Error("not an answers file");
+      // Merge rather than replace, so loading a colleague's file does not silently drop
+      // answers already given on this machine.
+      for (const [key, rec] of Object.entries(loaded.students)) {
+        const mine = ovFor(key, true);
+        const seen = new Set(mine.holds.map((h) => h.start + ">" + (h.until || "")));
+        for (const h of rec.holds || []) if (!seen.has(h.start + ">" + (h.until || ""))) mine.holds.push(h);
+        Object.assign(mine.planHours, rec.planHours || {});
+        for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
+        if (rec.weekdays) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
+        if (rec.note) mine.note = rec.note;
+        for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
+      }
+      await saveOverrides();
+      rerun();
+      say("Loaded answers for " + Object.keys(loaded.students).length + " student(s).");
+    } catch (err) {
+      say("Could not read that answers file: " + esc(err.message), "error");
+    }
+  }
+});
+
+el("importAnswers").addEventListener("click", () => el("answerPicker").click());
+
+el("clearAnswers").addEventListener("click", async () => {
+  overrides = { version: 1, students: {} };
+  await saveOverrides();
+  rerun();
+  say("All saved answers cleared.");
+});
+
 el("find").addEventListener("input", () => renderTable());
 
 el("run").addEventListener("click", () => {
@@ -1397,7 +1759,8 @@ el("run").addEventListener("click", () => {
 
 restoreSaved();
 
-window.__mt = { readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, roundHours, parseDate, inferSchedule, settle,
+window.__mt = { readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, buildQuestions,
+                get overrides() { return overrides; }, set overrides(v) { overrides = v; }, roundHours, parseDate, inferSchedule, settle,
                 get report() { return report; } };
 </script>
 </body>
