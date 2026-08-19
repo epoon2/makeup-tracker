@@ -101,3 +101,20 @@ file is opened directly from disk, not only when served.
 Real exports are never committed. They carry personal data for roughly 400 minors, so
 `testdata/` is git-ignored and the tool does all of its work in the browser, with no server
 and no upload.
+
+## The review queue
+
+The tool asks rather than waiting to be told. Everything it had to guess becomes a
+question with the likely answer marked:
+
+- **A whole month with no attendance.** On hold, enrolled and absent, or not enrolled?
+  The hold option is marked likely when the gap lines up with month boundaries, since a
+  hold usually does and a holiday usually does not.
+- **Stopped partway through a month.** Away and still owing, or on hold from then?
+- **A guessed schedule.** Confirm the inferred days, take the days seen this month, or
+  pick them by hand. This is the highest-leverage answer, since the schedule drives both
+  missed dates and the current-month projection.
+
+Answers save automatically and an answered question does not come back. **Save answers to
+a file** writes a small JSON file; **Load answers** merges one back in rather than
+replacing, so loading a colleague's copy cannot silently drop answers given here.
