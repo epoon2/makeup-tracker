@@ -108,6 +108,13 @@
   .hit .nm { font-size: 13.5px; font-weight: 600; }
   .hit .meta { font-size: 12px; color: var(--muted); }
   .hits .none { padding: 14px; color: var(--muted); font-size: 13px; text-align: center; }
+  .footer { margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line);
+            display: flex; gap: 12px; align-items: center; font-size: 13px; color: var(--muted); }
+  button.small { padding: 5px 11px; font-size: 12.5px; }
+  .ok-txt { color: var(--ok); font-weight: 600; }
+  .bad-txt { color: var(--bad); font-weight: 600; }
+  .checkfail { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; color: var(--bad);
+               white-space: pre-wrap; margin-top: 8px; }
   .q { border-top: 1px solid #eef1f5; padding: 12px 2px; }
   .q:first-child { border-top: 0; }
   .q .who { font-weight: 600; }
@@ -182,6 +189,10 @@
       </div>
       <div id="tableWrap"></div>
     </div>
+  </div>
+  <div class="footer">
+    <button class="ghost small" id="selfcheck">Run self-check</button>
+    <span id="selfcheckOut"></span>
   </div>
 </main>
 
@@ -1754,6 +1765,152 @@ el("forget").addEventListener("click", async () => {
 });
 
 /* ---------------------------------------------------------------------------
+   Self-check.
+
+   This machine has git but no node and no npm, so there is no test runner and no way to
+   run the Python reference. Without something like this the only way to know an edit did
+   not break the maths is to open the page and stare at five numbers, which catches a
+   crash and nothing subtler.
+
+   These run against fixed inputs with known answers, need no exports, and take a few
+   milliseconds. Run it after every edit. If it fails, the change broke a rule, not the
+   display.
+--------------------------------------------------------------------------- */
+
+function selfCheck() {
+  const fails = [];
+  let ran = 0;
+  const is = (name, got, want) => {
+    ran++;
+    const g = JSON.stringify(got), w = JSON.stringify(want);
+    if (g !== w) fails.push(name + "\n    got  " + g + "\n    want " + w);
+  };
+  const D = (y, m, d) => mkDate(y, m, d);
+  const visit = (y, m, d, hours, spm) => ({ key: "t", date: D(y, m, d), hours, spm: spm || 8 });
+
+  // --- durations: half-up to the nearest hour, under 30 min counts as nothing ---------
+  is("roundHours(0)", roundHours(0), 0);
+  is("roundHours(29)", roundHours(29), 0);
+  is("roundHours(30)", roundHours(30), 1);
+  is("roundHours(58)", roundHours(58), 1);
+  is("roundHours(60)", roundHours(60), 1);
+  is("roundHours(89)", roundHours(89), 1);
+  is("roundHours(90)", roundHours(90), 2);
+  is("roundHours(115)", roundHours(115), 2);
+  is("roundHours(120)", roundHours(120), 2);
+  is("roundHours(blank)", roundHours(""), 0);
+
+  // --- dates: M/D/YYYY, ISO, and the Recurring sentinel ------------------------------
+  is("parseDate('8/7/2026')", parseDate("8/7/2026").n, D(2026, 8, 7).n);
+  is("parseDate('2026-08-07')", parseDate("2026-08-07").n, D(2026, 8, 7).n);
+  is("parseDate('Recurring')", parseDate("Recurring"), null);
+  is("parseDate('')", parseDate(""), null);
+  is("parseDate garbage", parseDate("n/a"), null);
+  // Monday is 0. A timezone bug shows up here first.
+  is("weekday of Mon 3 Aug 2026", weekdayOf(D(2026, 8, 3).n), 0);
+  is("weekday of Sun 9 Aug 2026", weekdayOf(D(2026, 8, 9).n), 6);
+  is("lastDayOf Feb 2028 (leap)", lastDayOf(2028, 2), 29);
+  is("lastDayOf Feb 2026", lastDayOf(2026, 2), 28);
+
+  // --- name key: the join between the two exports ------------------------------------
+  is("nameKey collapses case and space", nameKey(" De  La Cruz ", "SOTO"), nameKey("de la cruz", "soto"));
+
+  // --- payable window: two months back, clipped to the export start -------------------
+  const w1 = payableWindow(D(2026, 7, 1).n, D(2026, 8, 17).n);
+  is("window clips to export start", [fromDayNumber(w1.fromN).m, fromDayNumber(w1.fromN).d], [7, 1]);
+  const w2 = payableWindow(D(2026, 7, 1).n, D(2026, 9, 29).n);
+  is("window is two months back", [fromDayNumber(w2.fromN).m, fromDayNumber(w2.fromN).d], [7, 29]);
+
+  // --- holds: whole months, and the close-on-enrolled lifecycle ----------------------
+  const openHold = { start: "2026-08", until: null };
+  is("open hold covers its own month", holdCovers(openHold, "2026-08"), true);
+  is("open hold runs forward", holdCovers(openHold, "2027-01"), true);
+  is("open hold ignores earlier months", holdCovers(openHold, "2026-07"), false);
+  const closed = { start: "2026-08", until: "2026-10" };
+  is("closed hold covers Aug", holdCovers(closed, "2026-08"), true);
+  is("closed hold covers Sep", holdCovers(closed, "2026-09"), true);
+  is("closed hold stops at Oct", holdCovers(closed, "2026-10"), false);
+
+  // --- FIFO settlement inside a two-month grace --------------------------------------
+  const M = (y, m, required, attended, extra) =>
+    Object.assign({ y, m, required, attended, onHold: false, isCurrent: false,
+                    label: MONTHS[m - 1] + " " + y }, extra || {});
+  is("later excess pays an earlier shortfall", settle([M(2026, 5, 8, 6), M(2026, 6, 8, 10)]).owed, 0);
+  const fifo = settle([M(2026, 4, 8, 5), M(2026, 5, 8, 6), M(2026, 6, 8, 12)]);
+  is("oldest debt is paid first", fifo.payments.map((p) => [p.to, p.hours]), [["Apr 2026", 3], ["May 2026", 1]]);
+  is("FIFO leaves the newer debt", fifo.owed, 1);
+  const expiry = settle([M(2026, 4, 8, 4), M(2026, 5, 8, 8), M(2026, 6, 8, 8), M(2026, 7, 8, 16)]);
+  is("debt expires after two months", expiry.expired, 4);
+  is("expired debt cannot be paid late", expiry.payments, []);
+  is("payable on the last month of grace", settle([M(2026, 4, 8, 4), M(2026, 6, 8, 12)]).owed, 0);
+  const bank = settle([M(2026, 5, 8, 12), M(2026, 6, 8, 4)]);
+  is("excess does not bank forward", [bank.owed, bank.unused], [4, 4]);
+  is("current month opens no debt", settle([M(2026, 8, 8, 2, { isCurrent: true })]).owed, 0);
+  is("held month opens no debt", settle([M(2026, 8, 8, 0, { onHold: true })]).debts.length, 0);
+  is("attendance while held pays earlier debt",
+     settle([M(2026, 7, 8, 6), M(2026, 8, 0, 2, { onHold: true })]).owed, 0);
+
+  // --- whole-month absence: evidence, never current roster status --------------------
+  const rec = (o) => Object.assign({ start: null, end: null, lastAttendance: null, onHold: false }, o);
+  const JUL = [D(2026, 7, 1).n, D(2026, 7, 31).n];
+  is("start after the month is a hard no",
+     resolveAbsence(rec({ start: D(2026, 8, 3) }), [D(2026, 8, 5).n], ...JUL).basis, NOT_ENROLLED);
+  is("nothing after the gap means they left",
+     resolveAbsence(rec({ start: D(2025, 1, 1) }), [D(2026, 6, 10).n], ...JUL).basis, NOT_ENROLLED);
+  is("nothing before the gap means not started",
+     resolveAbsence(rec({}), [D(2026, 8, 4).n], ...JUL).basis, NOT_ENROLLED);
+  is("bracketed by attendance is unverifiable",
+     resolveAbsence(rec({}), [D(2026, 6, 9).n, D(2026, 8, 4).n], ...JUL).basis, UNVERIFIABLE);
+  is("roster dates extend the brackets",
+     resolveAbsence(rec({ start: D(2024, 3, 1) }), [D(2026, 8, 4).n], ...JUL).basis, UNVERIFIABLE);
+
+  // --- schedule inference -------------------------------------------------------------
+  const weekly = [];
+  for (let w = 0; w < 5; w++) { weekly.push(visit(2026, 7, 6 + w * 7, 1)); weekly.push(visit(2026, 7, 8 + w * 7, 1)); }
+  const s1 = inferSchedule(weekly, 8);
+  is("8 hr plan, 1 hr sessions -> two days", s1.weekdays, [0, 2]);
+  is("steady attendance is confident", s1.confident, true);
+  const twoHour = [];
+  for (let w = 0; w < 5; w++) twoHour.push(visit(2026, 7, 7 + w * 7, 2));
+  is("8 hrs at 2 hr sessions -> one day", inferSchedule(twoHour, 8).weekdays, [1]);
+  is("session length read as 2", inferSchedule(twoHour, 8).sessionHours, 2);
+  is("one week of history is not confident", inferSchedule([visit(2026, 7, 6, 1), visit(2026, 7, 8, 1)], 8).confident, false);
+  // A stray Saturday must not become a scheduled day.
+  is("a one-off does not join the schedule", inferSchedule(weekly.concat([visit(2026, 7, 11, 1)]), 8).weekdays, [0, 2]);
+  // Per-month inference: August moved to Tue/Thu, July must keep Mon/Wed.
+  const moved = weekly.slice();
+  for (let w = 0; w < 4; w++) { moved.push(visit(2026, 8, 4 + w * 7, 1)); moved.push(visit(2026, 8, 6 + w * 7, 1)); }
+  is("July keeps its own days",
+     inferScheduleForMonth(moved, 8, D(2026, 7, 1).n, D(2026, 7, 31).n).weekdays, [0, 2]);
+  is("August gets the new days",
+     inferScheduleForMonth(moved, 8, D(2026, 8, 1).n, D(2026, 8, 31).n).weekdays, [1, 3]);
+
+  // --- missed dates and the data horizon ---------------------------------------------
+  // Export stops on the 17th, today is the 19th: the 18th is unknown, not missed.
+  const mo = buildMonth(2026, 8, weekly.concat([visit(2026, 8, 3, 1)]),
+                        { weekdays: [0, 1], sessionHours: 1, confident: true, reason: "" },
+                        8, null, D(2026, 8, 19).n, D(2026, 8, 17).n, null);
+  is("nothing past the export date is missed",
+     mo.missed.every((n) => n <= D(2026, 8, 17).n), true);
+  is("today is never missed", mo.missed.includes(D(2026, 8, 19).n), false);
+
+  return { ran, fails };
+}
+
+el("selfcheck").addEventListener("click", () => {
+  const out = el("selfcheckOut");
+  let result;
+  try { result = selfCheck(); }
+  catch (err) { out.innerHTML = '<span class="bad-txt">Self-check crashed: ' + esc(err.message) + "</span>"; throw err; }
+  if (!result.fails.length) {
+    out.innerHTML = '<span class="ok-txt">' + result.ran + " checks passed.</span>";
+  } else {
+    out.innerHTML = '<span class="bad-txt">' + result.fails.length + " of " + result.ran +
+      ' checks FAILED.</span><div class="checkfail">' + esc(result.fails.join("\n\n")) + "</div>";
+  }
+});
+
+/* ---------------------------------------------------------------------------
    Student search.
 
    The per-tab filter could only find someone already on the tab you were looking at, so
@@ -1942,7 +2099,7 @@ el("run").addEventListener("click", () => {
 
 restoreSaved();
 
-window.__mt = { readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, buildQuestions,
+window.__mt = { selfCheck, readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, buildQuestions,
                 get overrides() { return overrides; }, set overrides(v) { overrides = v; },
                 get focusKey() { return focusKey; }, renderQueue: () => renderQueue(), roundHours, parseDate, inferSchedule, settle,
                 get report() { return report; } };
