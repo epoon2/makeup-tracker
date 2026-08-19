@@ -13,17 +13,17 @@ async def main():
         await pg.set_input_files("#picker", "testdata/attendance.xlsx")
         await pg.evaluate("document.getElementById('picker').onchange({})") if False else None
         # the picker's onchange is assigned on click, so drive intake directly
-        await pg.evaluate("""async () => {
-            const mk = async (u, which) => {
-                const blob = await (await fetch(u)).blob();
-                const f = new File([blob], u.split('/').pop(), {type: blob.type});
-                const dt = new DataTransfer(); dt.items.add(f);
-                const node = which === 'attendance' ? document.getElementById('dropAtt') : document.getElementById('dropStu');
-                node.dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true}));
-            };
-            await mk('testdata/attendance.xlsx','attendance');
-            await mk('testdata/students.xlsx','roster');
-        }""")
+        import base64, pathlib as _pl
+        _b = lambda f: base64.b64encode(_pl.Path(f).read_bytes()).decode()
+        await pg.evaluate("""async (p) => {
+            // Bytes, not fetch: the page blocks all network with connect-src 'none'.
+            const toFile = (b64, name) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new File([u], name); };
+            const drop = (id, f) => { const dt = new DataTransfer(); dt.items.add(f);
+              document.getElementById(id).dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true})); };
+            drop('dropAtt', toFile(p.att, 'attendance.xlsx'));
+            drop('dropStu', toFile(p.stu, 'students.xlsx'));
+        }""", {"att": _b("testdata/attendance.xlsx"), "stu": _b("testdata/students.xlsx")})
         await pg.wait_for_function("() => !document.getElementById('run').disabled", timeout=15000)
         await pg.click("#run")
         await pg.wait_for_selector("#results:not([hidden])")
