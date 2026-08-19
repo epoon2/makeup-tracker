@@ -98,7 +98,7 @@ file is opened directly from disk, not only when served.
 
 ## Finding a student
 
-The search box in the header covers every student in the run, not just the tab on screen,
+The search box above the tabs covers every student in the run, not just the tab on screen,
 which is the thing ctrl+F cannot do: a student who owes nothing does not appear on the
 Owes tab at all, so there is no text on the page to find. Each result says which list the
 student is in, picking one opens their record with the working already expanded, and the
@@ -113,6 +113,11 @@ question with the likely answer marked:
 - **A whole month with no attendance.** On hold, enrolled and absent, or not enrolled?
   The hold option is marked likely when the gap lines up with month boundaries, since a
   hold usually does and a holiday usually does not.
+  **On hold and not enrolled do the same thing to the month you pick — both owe nothing.**
+  They differ afterwards: a hold also covers every later month until an export shows the
+  student enrolled again, while not enrolled applies to that one month. So a hold on a past
+  month, run against an export that already shows them enrolled, is closed immediately and
+  the two are identical.
 - **Stopped partway through a month.** Away and still owing, or on hold from then?
 - **A guessed schedule.** Confirm the inferred days, take the days seen this month, or
   pick them by hand. This is the highest-leverage answer, since the schedule drives both
