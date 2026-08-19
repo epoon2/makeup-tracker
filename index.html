@@ -883,9 +883,13 @@ function buildReport(attendance, roster, todayN) {
         flags.push(mo.required + " hrs granted for " + mo.label + "; enrollment that month unconfirmed");
       }
     }
+    const onSched = new Set(schedule.weekdays);
+    const attendedDates = list
+      .map((v) => ({ n: v.date.n, hours: v.hours, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
+      .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, schedule, months, ledger, rec, flags, current,
+      plan, schedule, months, ledger, rec, flags, current, attendedDates,
       onHold: !!(rec && rec.onHold),
       owed: ledger.owed,
       toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
@@ -995,6 +999,16 @@ function detailFor(s) {
   }
   if (s.ledger.expired) rows.push("<dt>Expired unpaid</dt><dd>" + s.ledger.expired + " hrs past the two-month grace</dd>");
 
+  if (s.attendedDates.length) {
+    // Off-schedule visits are marked, because those are the ones already doing makeup
+    // work. A 2-hour visit is marked too, since it counts double toward the month.
+    rows.push("<dt>Came on</dt><dd class=\"dates\">" + s.attendedDates.map((v) => {
+      const label = fmtShort(fromDayNumber(v.n)) + (v.hours > 1 ? " (" + v.hours + "h)" : "");
+      return v.onSchedule ? label : '<span class="pill ok" title="off their regular days, counts as makeup">' + label + "</span>";
+    }).join(" &middot; ") + "</dd>");
+  } else {
+    rows.push("<dt>Came on</dt><dd style=\"color:var(--muted)\">no visits in this export</dd>");
+  }
   if (s.missed.length) {
     rows.push("<dt>Missed dates</dt><dd class=\"dates\">" +
       s.missed.map((n) => fmtShort(fromDayNumber(n))).join(" &middot; ") + "</dd>");
@@ -1027,7 +1041,7 @@ function renderTable() {
 
   wrap.innerHTML =
     "<table><thead><tr><th>Student</th><th>Schedule</th><th>Plan</th>" +
-    '<th class="num">Owes</th><th class="num">Makeups now</th><th class="num">Missed</th><th>Flags</th></tr></thead><tbody>' +
+    '<th class="num">Owes</th><th class="num">Makeups now</th><th class="num">Came</th><th class="num">Missed</th><th>Flags</th></tr></thead><tbody>' +
     list.map((s, i) => {
       const flag = s.onHold ? '<span class="pill mute">on hold</span>' : "";
       const warn = s.flags.length ? '<span class="pill warn">' + s.flags.length + " to check</span>" : "";
@@ -1037,9 +1051,10 @@ function renderTable() {
         '<td class="num">' + s.plan + "</td>" +
         '<td class="num">' + (s.owed ? '<span class="pill bad">' + s.owed + "</span>" : "&mdash;") + "</td>" +
         '<td class="num">' + (s.toSchedule ? '<span class="pill warn">' + s.toSchedule + "</span>" : "&mdash;") + "</td>" +
+        '<td class="num">' + (s.attendedDates.length || "&mdash;") + "</td>" +
         '<td class="num">' + (s.missed.length || "&mdash;") + "</td>" +
         "<td>" + flag + " " + warn + "</td></tr>" +
-        '<tr class="detail" data-d="' + i + '" hidden><td colspan="7">' + detailFor(s) + "</td></tr>";
+        '<tr class="detail" data-d="' + i + '" hidden><td colspan="8">' + detailFor(s) + "</td></tr>";
     }).join("") + "</tbody></table>";
 
   wrap.querySelectorAll("tr.head").forEach((tr) => {
@@ -1236,6 +1251,15 @@ function exportRows() {
                  s.toSchedule, c.remaining || 0]);
   }
 
+  const came = [["Student", "Schedule", "Date", "Weekday", "Hours", "On their regular day"]];
+  for (const s of report.students) {
+    for (const v of s.attendedDates) {
+      const d = fromDayNumber(v.n);
+      came.push([s.display, scheduleLabel(s.schedule), fmt(d), WEEKDAYS[weekdayOf(v.n)],
+                 v.hours, v.onSchedule ? "yes" : "no (makeup)"]);
+    }
+  }
+
   const missed = [["Student", "Schedule", "Missed date", "Weekday"]];
   for (const s of report.students) {
     for (const n of s.missed) {
@@ -1265,6 +1289,7 @@ function exportRows() {
   return [
     { name: "Owes hours", rows: owes },
     { name: "Behind pace", rows: behind },
+    { name: "Attended dates", rows: came },
     { name: "Missed dates", rows: missed },
     { name: "Never attended", rows: never },
     { name: "On hold", rows: held },
