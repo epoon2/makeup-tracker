@@ -731,7 +731,7 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   const out = {
     y, m, required, attended, onHold, isCurrent, proratedFrom,
     label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
-    scheduled: [], missed: [], absentWholeMonth: false, basis: "", detail: "", projected: 0, note: "",
+    scheduled: [], missed: [], absentWholeMonth: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
   };
 
   // The horizon is the last date we can honestly call missed: never today, because
@@ -749,8 +749,13 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
     const remaining = out.scheduled.filter((n) => n > horizon);
     out.projected = attended + remaining.length * schedule.sessionHours;
     out.remaining = remaining.length;
-    if (out.projected < out.required) {
-      out.note = "not on track: " + out.projected + " of " + out.required + " hrs projected with " + remaining.length + " session(s) left";
+    // What is short after projecting the rest of the month is granted as makeups now, so
+    // it can be booked before the month closes. It shrinks on its own as they attend,
+    // because the projection is recomputed every run.
+    out.granted = Math.max(0, out.required - out.projected);
+    if (out.granted) {
+      out.note = out.granted + " makeup hr(s) for " + out.label + ": " + out.projected + " of " +
+                 out.required + " hrs projected with " + remaining.length + " session(s) left";
     }
     return out;
   }
@@ -897,6 +902,11 @@ function buildReport(attendance, roster, todayN) {
   if (elapsed.length < 2) {
     warnings.push("only " + elapsed.length + " completed month(s) of attendance are available, so the two-month grace window cannot settle debt against a later month yet");
   }
+  const shakyGrant = students.reduce((a, s) => a + (s.current && !s.schedule.confident ? s.current.granted : 0), 0);
+  const totalGrant = students.reduce((a, s) => a + (s.current ? s.current.granted : 0), 0);
+  if (shakyGrant) {
+    warnings.push(shakyGrant + " of " + totalGrant + " makeup hrs granted for the current month rest on a schedule that could not be inferred confidently; check those before booking");
+  }
   const shaky = students.filter((s) => !s.schedule.confident).length;
   if (shaky) {
     warnings.push(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates");
@@ -933,7 +943,7 @@ function renderCards() {
     s + x.months.filter((mo) => mo.absentWholeMonth && mo.basis === UNVERIFIABLE).reduce((a, mo) => a + mo.required, 0), 0);
   el("cards").innerHTML =
     card(report.owing.length, "owe makeup hours", owedHours + " hrs outstanding") +
-    card(report.behind.length, "behind pace this month", bookHours + " hrs to book") +
+    card(report.behind.length, "behind pace this month", bookHours + " makeup hrs granted") +
     card(report.held.length, "on hold", "debt frozen") +
     card(report.neverAttended.length, "enrolled, never attended", "no visits in this export") +
     card(flagged, "hrs need checking", "whole-month absences we could not confirm");
@@ -1017,7 +1027,7 @@ function renderTable() {
 
   wrap.innerHTML =
     "<table><thead><tr><th>Student</th><th>Schedule</th><th>Plan</th>" +
-    '<th class="num">Owes</th><th class="num">Book now</th><th class="num">Missed</th><th>Flags</th></tr></thead><tbody>' +
+    '<th class="num">Owes</th><th class="num">Makeups now</th><th class="num">Missed</th><th>Flags</th></tr></thead><tbody>' +
     list.map((s, i) => {
       const flag = s.onHold ? '<span class="pill mute">on hold</span>' : "";
       const warn = s.flags.length ? '<span class="pill warn">' + s.flags.length + " to check</span>" : "";
@@ -1219,7 +1229,7 @@ function exportRows() {
   }
 
   const behind = [["Student", "Plan (hrs/mo)", "Schedule", "Attended so far", "Projected",
-                   "Hours to book", "Sessions left"]];
+                   "Makeup hrs granted this month", "Sessions left"]];
   for (const s of report.behind) {
     const c = s.current;
     behind.push([s.display, s.plan, scheduleLabel(s.schedule), c.attended, c.projected,
