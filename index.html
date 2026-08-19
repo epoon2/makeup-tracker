@@ -3,6 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  The page must never be able to send anything anywhere. Student data is read from files
+  the user picks and stays in their browser, and this makes that a rule the browser
+  enforces rather than a promise in a README. connect-src 'none' is the one that matters:
+  no fetch, no XHR, no WebSocket, no beacon.
+
+  It lives in the file as well as in netlify.toml so the guarantee survives however the
+  page is opened: from a URL, from a network share, or emailed as a single file. Servers
+  can add headers; a file on a USB stick cannot.
+  (frame-ancestors is not honoured in a meta tag, so netlify.toml carries that one.)
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <title>Makeup Hours — Mathnasium Temple City</title>
 <style>
   :root {
