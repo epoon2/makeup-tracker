@@ -16,9 +16,10 @@ after it is written.
    Used columns: `Student Id`, `First Name`, `Last Name`, `Enrollment Status`,
    `Enrollment Start Date`, `Enrollment End Date`, `Last Attendance Date`, `Center`.
 
-**Export the attendance report starting from the first day of the month two months before
-the current month.** The grace window looks back two calendar months, so a shorter export
-silently under-reports what students owe.
+Attendance was only recorded reliably from **1 July 2026**, so that is the earliest month
+the tool can see and the grace window has less to work with than it will once more months
+accumulate. The export does not need to run up to today; the page shows the last attendance
+date it found so it is clear how current the numbers are.
 
 ## Rules
 
@@ -48,16 +49,28 @@ with students who owe hours.
 
 ### A full month with no attendance
 
-If a student has no attendance at all in an elapsed month, enrollment decides the outcome:
+If a student has no attendance at all in an elapsed month, enrollment decides the outcome.
 
-| Enrollment during that month | Result |
+**`Enrollment Status` is not used to decide it.** That column describes today. A student who
+reads Enrolled now may have been unenrolled, or on hold, during the month in question, so it
+cannot testify about a past month.
+
+What decides it is attendance, because **attendance can only be recorded for an enrolled
+student**, so a visit on a date proves enrollment on that date. The question becomes whether
+the gap is bracketed by evidence of enrollment on both sides. `Enrollment Start Date` and
+`Last Attendance Date` extend those brackets past the export window, which matters because
+the attendance export begins 1 July 2026 and nothing earlier exists.
+
+| Evidence | Result |
 |---|---|
-| Enrolled | Owed their full plan for the month (4, 8, or 12 hours) as makeups |
-| Not enrolled | No makeups owed |
-| Cannot be determined | Owed the full plan, **flagged** with the month, so the number is never presented as verified |
+| Enrollment started after the month, or ended before it | Not enrolled, no makeups |
+| Nothing after the gap | They stopped coming, no makeups |
+| Nothing before the gap | Had not started yet, no makeups |
+| Bracketed on both sides | Full plan owed, **flagged** with the month and the evidence |
 
-The third row exists because `Enrollment Start Date` is blank on a large share of roster
-records. The report says which month drove the number so it can be checked by hand.
+The last row is granted rather than asserted because an undated hold looks identical to
+enrolled-and-absent from outside, and neither export dates holds. The report names the month
+so it can be checked by hand.
 
 ### The current month
 

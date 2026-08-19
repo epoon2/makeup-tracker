@@ -139,13 +139,15 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
     never.sort(key=lambda r: _display(r.key))
 
     warnings = list(loaded.warnings)
-    span_start = span[0]
-    wanted_start = (today.year, today.month - 2) if today.month > 2 else (today.year - 1, today.month + 10)
-    if span_start > wanted_start:
+    elapsed = [m for m in span if m != (today.year, today.month)]
+    if len(elapsed) < 2:
+        # Not a fix-your-export warning. Attendance was only recorded reliably from
+        # 1 July 2026, so there is nothing earlier to load. The grace window simply has
+        # less to work with than it will next month, and the report should say so rather
+        # than look like it checked further back than it did.
         warnings.append(
-            f"attendance export starts {first_visit:%-m/%-d/%Y}. The grace window looks back "
-            f"two calendar months, so re-export from {wanted_start[0]}-{wanted_start[1]:02d}-01 "
-            "to see everything still payable."
+            f"only {len(elapsed)} completed month(s) of attendance are available, so the "
+            "two-month grace window cannot settle debt against a later month yet"
         )
     unconfident = sum(1 for s in students if not s.schedule.confident)
     if unconfident:

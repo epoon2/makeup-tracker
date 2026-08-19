@@ -6,6 +6,8 @@ import calendar
 import datetime as dt
 from dataclasses import dataclass, field
 
+from .enrollment import ENROLLED, NOT_ENROLLED, UNVERIFIABLE
+from .enrollment import resolve as resolve_absence
 from .loaders import RosterRecord, Visit
 from .schedule import Schedule, scheduled_dates
 
@@ -22,35 +24,6 @@ def months_between(first: dt.date, last: dt.date) -> list[tuple[int, int]]:
     return out
 
 
-# How an absence for a whole month was resolved. The third value is the one that matters:
-# it means the number is a default, not a finding, and the report has to say so.
-ENROLLED = "enrolled"
-NOT_ENROLLED = "not-enrolled"
-UNVERIFIABLE = "unverifiable"
-
-
-def enrollment_during(record: RosterRecord | None, start: dt.date, end: dt.date) -> str:
-    """Was the student enrolled at any point in [start, end]?
-
-    Enrollment Start Date is blank on roughly two thirds of roster records, so this
-    returns UNVERIFIABLE often. That is the honest answer: Enrollment Status is a
-    snapshot of today, not of the month being asked about, and inferring backwards
-    from it would quietly turn a guess into a fact.
-    """
-    if record is None:
-        return UNVERIFIABLE
-    if record.start is None:
-        # No start date. An end date before the month still settles it.
-        if record.end is not None and record.end < start:
-            return NOT_ENROLLED
-        return UNVERIFIABLE
-    if record.start > end:
-        return NOT_ENROLLED
-    if record.end is not None and record.end < start:
-        return NOT_ENROLLED
-    return ENROLLED
-
-
 @dataclass
 class MonthResult:
     year: int
@@ -61,6 +34,7 @@ class MonthResult:
     missed_dates: list[dt.date] = field(default_factory=list)
     absent_whole_month: bool = False
     absence_basis: str = ""
+    absence_detail: str = ""
     prorated_from: dt.date | None = None
     on_hold: bool = False
     is_current: bool = False
@@ -173,16 +147,19 @@ def build_month(
         return result
 
     if attended == 0 and required > 0:
-        # A whole elapsed month with nothing recorded. Enrollment decides it.
+        # A whole elapsed month with nothing recorded. Enrollment decides it, and it is
+        # decided from attendance evidence rather than from today's Enrollment Status.
         result.absent_whole_month = True
-        result.absence_basis = enrollment_during(record, first, last)
-        if result.absence_basis == NOT_ENROLLED:
+        verdict = resolve_absence(record, [v.date for v in visits], first, last)
+        result.absence_basis = verdict.basis
+        result.absence_detail = verdict.detail
+        if verdict.basis == NOT_ENROLLED:
             result.required = 0
-            result.note = f"not enrolled during {result.label}, no makeups owed"
-        elif result.absence_basis == UNVERIFIABLE:
+            result.note = f"not enrolled during {result.label} ({verdict.detail}), no makeups owed"
+        elif verdict.basis == UNVERIFIABLE:
             result.note = (
                 f"{result.required} hrs because they were not here in {result.label}; "
-                "enrollment for that month could not be confirmed"
+                f"enrollment that month could not be confirmed ({verdict.detail})"
             )
         else:
             result.note = f"enrolled but absent all of {result.label}"
