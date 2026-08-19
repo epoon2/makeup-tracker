@@ -105,8 +105,10 @@
     </div>
     <div class="row" style="margin-top:16px">
       <button id="run" disabled>Run</button>
+      <button class="ghost" id="forget" hidden>Forget stored data</button>
       <span class="stamp" id="stamp">No data loaded</span>
     </div>
+    <div class="sub" id="storageNote" style="margin-top:10px"></div>
     <div id="messages"></div>
     <div id="log"></div>
   </div>
@@ -313,6 +315,91 @@ async function readSheet(buffer) {
 const state = { attendance: null, roster: null };
 const el = (id) => document.getElementById(id);
 
+/* ---------------------------------------------------------------------------
+   Remembering the exports between visits.
+
+   Stores the raw .xlsx bytes in IndexedDB so the page reloads with whatever was
+   dropped last, rather than making someone re-import every time. Bytes rather than
+   parsed rows: re-parsing takes under a second and keeps the stored shape simple, so
+   a later change to the parser cannot leave a stale cache behind.
+
+   This is a deliberate trade. It moves roughly 400 students' names and enrollment
+   details from "in memory until the tab closes" to "on this machine until cleared",
+   which is why the page says so out loud and carries a button to erase it. Still
+   local: nothing is uploaded, and IndexedDB is readable only by this page.
+--------------------------------------------------------------------------- */
+
+const DB_NAME = "makeup-tracker";
+const STORE = "exports";
+let storageWorks = true;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    let request;
+    try { request = indexedDB.open(DB_NAME, 1); }
+    catch (e) { reject(e); return; }
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB unavailable"));
+    request.onblocked = () => reject(new Error("IndexedDB blocked"));
+  });
+}
+
+async function dbPut(key, value) {
+  const db = await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(value, key);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+async function dbGet(key) {
+  const db = await openDb();
+  const out = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return out;
+}
+
+async function dbClear() {
+  const db = await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+function describeStorage() {
+  const note = el("storageNote");
+  const saved = [state.attendance, state.roster].filter((s) => s && s.savedAt);
+  if (!storageWorks) {
+    note.textContent = "This browser will not let the page save anything, so both exports need dropping in each time.";
+    el("forget").hidden = true;
+    return;
+  }
+  if (!saved.length) {
+    note.textContent = "Exports you drop here are remembered on this machine so you do not have to import them again. Nothing is uploaded.";
+    el("forget").hidden = true;
+    return;
+  }
+  const when = new Date(Math.max(...saved.map((s) => s.savedAt)));
+  note.textContent = "Holding both exports on this machine since " + when.toLocaleString() +
+    ", so they reload automatically. That includes student names and enrollment details. Nothing is uploaded. Use Forget stored data to erase it.";
+  el("forget").hidden = false;
+}
+
 function say(html, kind) {
   const box = document.createElement("div");
   box.className = "notice" + (kind === "error" ? " err" : "");
@@ -322,23 +409,53 @@ function say(html, kind) {
 
 function clearMessages() { el("messages").innerHTML = ""; }
 
+function markLoaded(which, fileName, rows, savedAt) {
+  const drop = which === "attendance" ? el("dropAtt") : el("dropStu");
+  const label = which === "attendance" ? el("nameAtt") : el("nameStu");
+  drop.classList.add("loaded");
+  label.textContent = fileName + " — " + rows.toLocaleString() + " rows" + (savedAt ? " (remembered)" : "");
+  el("run").disabled = !(state.attendance && state.roster);
+}
+
 async function accept(file, which) {
   clearMessages();
   try {
     const buffer = await file.arrayBuffer();
     const sheet = await readSheet(buffer);
+    sheet.fileName = file.name;
     state[which] = sheet;
-    const drop = which === "attendance" ? el("dropAtt") : el("dropStu");
-    const label = which === "attendance" ? el("nameAtt") : el("nameStu");
-    drop.classList.add("loaded");
-    label.textContent = file.name + " — " + sheet.records.length.toLocaleString() + " rows";
-    el("run").disabled = !(state.attendance && state.roster);
-    el("log").textContent =
-      (state.attendance ? "attendance columns: " + state.attendance.headers.filter(Boolean).join(", ") + "\n" : "") +
-      (state.roster ? "roster columns: " + state.roster.headers.filter(Boolean).length + " found\n" : "");
+    markLoaded(which, file.name, sheet.records.length, null);
+    el("log").textContent = "";
+    try {
+      await dbPut(which, { name: file.name, bytes: buffer, savedAt: Date.now() });
+      sheet.savedAt = Date.now();
+    } catch (e) {
+      storageWorks = false;
+    }
+    describeStorage();
   } catch (err) {
     say("Could not read <b>" + file.name + "</b>: " + err.message, "error");
   }
+}
+
+async function restoreSaved() {
+  try {
+    const [att, ros] = await Promise.all([dbGet("attendance"), dbGet("roster")]);
+    for (const [which, saved] of [["attendance", att], ["roster", ros]]) {
+      if (!saved || !saved.bytes) continue;
+      const sheet = await readSheet(saved.bytes);
+      sheet.fileName = saved.name;
+      sheet.savedAt = saved.savedAt;
+      state[which] = sheet;
+      markLoaded(which, saved.name, sheet.records.length, saved.savedAt);
+    }
+  } catch (e) {
+    storageWorks = false;
+  }
+  describeStorage();
+  // Re-run straight away. The point of remembering the files is not having to do
+  // anything on open, and the run date changes daily even when the data has not.
+  if (state.attendance && state.roster) el("run").click();
 }
 
 function wireDrop(node, which) {
@@ -1164,6 +1281,24 @@ el("download").addEventListener("click", async () => {
   }
 });
 
+el("forget").addEventListener("click", async () => {
+  try { await dbClear(); } catch (e) { /* nothing stored, or storage refused */ }
+  state.attendance = null;
+  state.roster = null;
+  report = null;
+  for (const [drop, label] of [["dropAtt", "nameAtt"], ["dropStu", "nameStu"]]) {
+    el(drop).classList.remove("loaded");
+    el(label).textContent = "";
+  }
+  el("run").disabled = true;
+  el("results").hidden = true;
+  el("stamp").className = "stamp";
+  el("stamp").textContent = "No data loaded";
+  clearMessages();
+  describeStorage();
+  say("Stored exports erased from this machine.");
+});
+
 el("find").addEventListener("input", () => renderTable());
 
 el("run").addEventListener("click", () => {
@@ -1181,7 +1316,9 @@ el("run").addEventListener("click", () => {
   }
 });
 
-window.__mt = { readSheet, readDirectory, state, buildReport, roundHours, parseDate, inferSchedule, settle,
+restoreSaved();
+
+window.__mt = { readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, roundHours, parseDate, inferSchedule, settle,
                 get report() { return report; } };
 </script>
 </body>
