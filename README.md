@@ -113,11 +113,11 @@ question with the likely answer marked:
 - **A whole month with no attendance.** On hold, enrolled and absent, or not enrolled?
   The hold option is marked likely when the gap lines up with month boundaries, since a
   hold usually does and a holiday usually does not.
-  **On hold and not enrolled do the same thing to the month you pick — both owe nothing.**
-  They differ afterwards: a hold also covers every later month until an export shows the
-  student enrolled again, while not enrolled applies to that one month. So a hold on a past
-  month, run against an export that already shows them enrolled, is closed immediately and
-  the two are identical.
+  **Not enrolled is only offered when it would actually differ from on hold.** Both owe
+  nothing for the month picked; the only difference is that a hold also covers every later
+  month until an export shows the student enrolled again. Since a hold closes the moment
+  such an export arrives, the two are identical for anyone the roster already reads as
+  Enrolled, so that option is hidden there rather than presented as a real choice.
 - **Stopped partway through a month.** Away and still owing, or on hold from then?
 - **A guessed schedule.** Confirm the inferred days, take the days seen this month, or
   pick them by hand. This is the highest-leverage answer, since the schedule drives both

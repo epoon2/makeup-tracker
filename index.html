@@ -1156,19 +1156,26 @@ function buildQuestions(rep) {
       const id = "absent:" + mk;
       if (wasAnswered(s.key, id) || (s.over && isHeld(s.over, mk))) continue;
       const likelyHold = gapLooksLikeAHold(s, mo);
+      // 'Not enrolled' only differs from 'on hold' when the hold would keep running, and a
+      // hold closes the moment an export shows the student enrolled. So for anyone the
+      // roster already reads as Enrolled the two answers are identical, and offering both
+      // is asking a question with one answer wearing two labels.
+      const offerNotEnrolled = !(s.rec && s.rec.status.toLowerCase() === "enrolled");
       out.push({
         key: s.key, id, who: s.display,
         ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
-             "Right now that is charged as " + mo.required + " makeup hrs. Which was it? " +
-             "On hold also covers every month after this one until an export shows them enrolled again; " +
-             "not enrolled applies to " + mo.label + " on its own.",
+             "Right now that is charged as " + mo.required + " makeup hrs. Which was it?" +
+             (offerNotEnrolled
+               ? " On hold also covers every month after this one until an export shows them enrolled again; not enrolled applies to " + mo.label + " on its own."
+               : ""),
         options: [
           { label: "On hold from " + monthLabel(mk), suggest: likelyHold, apply: () => {
               ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
           { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
-          { label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
-              ovFor(s.key, true).notEnrolled.push(mk); } },
-        ],
+        ].concat(offerNotEnrolled
+          ? [{ label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
+                ovFor(s.key, true).notEnrolled.push(mk); } }]
+          : []),
       });
     }
 
