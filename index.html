@@ -55,7 +55,8 @@
   .card .n { font-size: 26px; font-weight: 700; letter-spacing: -.5px; }
   .card .k { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
   .card .x { color: var(--muted); font-size: 12px; margin-top: 6px; }
-  .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-left: auto; }
   .tab { padding: 7px 13px; border-radius: 6px; border: 1px solid transparent; cursor: pointer;
          font-size: 13.5px; font-weight: 600; color: var(--muted); background: none; }
   .tab:hover { background: #eef2f7; }
@@ -115,7 +116,7 @@
     <div class="panel">
       <div class="row" style="justify-content:space-between">
         <div class="tabs" id="tabs"></div>
-        <div class="row">
+        <div class="toolbar">
           <input type="search" id="find" placeholder="Filter by name" autocomplete="off">
           <button class="ghost" id="download">Export to Excel</button>
         </div>
@@ -923,6 +924,223 @@ function wireTabs() {
     b.onclick = () => { activeTab = b.dataset.tab; renderTabs(); wireTabs(); renderTable(); };
   });
 }
+
+/* ---------------------------------------------------------------------------
+   Writing .xlsx back out.
+
+   Same trade as reading: build the ZIP by hand with CompressionStream rather than
+   pull in a library, so the page stays one file that works offline.
+--------------------------------------------------------------------------- */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function deflateRaw(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function makeZip(files) {
+  const encoder = new TextEncoder();
+  const parts = [], directory = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = encoder.encode(file.name);
+    const raw = encoder.encode(file.text);
+    const packed = await deflateRaw(raw);
+    const sum = crc32(raw);
+
+    const local = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(8, 8, true);       // deflate
+    lv.setUint32(14, sum, true);
+    lv.setUint32(18, packed.length, true);
+    lv.setUint32(22, raw.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+    parts.push(local, packed);
+
+    const central = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(central.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(10, 8, true);
+    cv.setUint32(16, sum, true);
+    cv.setUint32(20, packed.length, true);
+    cv.setUint32(24, raw.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+    directory.push(central);
+
+    offset += local.length + packed.length;
+  }
+
+  const dirSize = directory.reduce((s, d) => s + d.length, 0);
+  const end = new Uint8Array(22);
+  const ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, files.length, true);
+  ev.setUint16(10, files.length, true);
+  ev.setUint32(12, dirSize, true);
+  ev.setUint32(16, offset, true);
+
+  return new Blob([...parts, ...directory, end], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+}
+
+const xmlEscape = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  // Control characters are illegal in XML 1.0 and make Excel refuse the whole file.
+  .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+
+function colName(i) {
+  let s = "";
+  for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+  return s;
+}
+
+function sheetXml(rows) {
+  const body = rows.map((row, r) =>
+    "<row r=\"" + (r + 1) + "\">" + row.map((cell, c) => {
+      const ref = colName(c) + (r + 1);
+      if (typeof cell === "number" && isFinite(cell)) return "<c r=\"" + ref + "\"><v>" + cell + "</v></c>";
+      const text = xmlEscape(cell);
+      if (!text) return "";
+      return "<c r=\"" + ref + "\" t=\"inlineStr\"><is><t xml:space=\"preserve\">" + text + "</t></is></c>";
+    }).join("") + "</row>").join("");
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+    body + "</sheetData></worksheet>";
+}
+
+async function workbook(sheets) {
+  const files = [
+    { name: "[Content_Types].xml", text:
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+      sheets.map((_, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) +
+        '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join("") +
+      "</Types>" },
+    { name: "_rels/.rels", text:
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+      "</Relationships>" },
+    { name: "xl/workbook.xml", text:
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
+      'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
+      sheets.map((s, i) => '<sheet name="' + xmlEscape(s.name) + '" sheetId="' + (i + 1) +
+        '" r:id="rId' + (i + 1) + '"/>').join("") +
+      "</sheets></workbook>" },
+    { name: "xl/_rels/workbook.xml.rels", text:
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      sheets.map((_, i) => '<Relationship Id="rId' + (i + 1) +
+        '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' +
+        (i + 1) + '.xml"/>').join("") +
+      "</Relationships>" },
+  ];
+  sheets.forEach((s, i) => files.push({ name: "xl/worksheets/sheet" + (i + 1) + ".xml", text: sheetXml(s.rows) }));
+  return makeZip(files);
+}
+
+function exportRows() {
+  const stamp = "data through " + fmtLong(report.dataThrough) + ", run " + fmtLong(report.today);
+
+  const owes = [["Student", "Plan (hrs/mo)", "Schedule", "Schedule confident", "Hours owed",
+                 "Oldest debt", "Needs checking", "Missed dates"]];
+  for (const s of report.owing) {
+    owes.push([s.display, s.plan, scheduleLabel(s.schedule), s.schedule.confident ? "yes" : "no",
+               s.owed, s.ledger.open.length ? s.ledger.open[0].label : "",
+               s.flags.join("; "), s.missed.map((n) => fmt(fromDayNumber(n))).join(", ")]);
+  }
+
+  const behind = [["Student", "Plan (hrs/mo)", "Schedule", "Attended so far", "Projected",
+                   "Hours to book", "Sessions left"]];
+  for (const s of report.behind) {
+    const c = s.current;
+    behind.push([s.display, s.plan, scheduleLabel(s.schedule), c.attended, c.projected,
+                 s.toSchedule, c.remaining || 0]);
+  }
+
+  const missed = [["Student", "Schedule", "Missed date", "Weekday"]];
+  for (const s of report.students) {
+    for (const n of s.missed) {
+      const d = fromDayNumber(n);
+      missed.push([s.display, scheduleLabel(s.schedule), fmt(d), WEEKDAYS[weekdayOf(n)]]);
+    }
+  }
+
+  const never = [["Student", "Status", "Enrolled since", "Last attendance on record"]];
+  for (const r of report.neverAttended) {
+    never.push([displayName(r.key), r.status, r.start ? fmt(r.start) : "", r.lastAttendance ? fmt(r.lastAttendance) : ""]);
+  }
+
+  const held = [["Student", "Plan (hrs/mo)", "Schedule", "Status"]];
+  for (const s of report.held) held.push([s.display, s.plan, scheduleLabel(s.schedule), s.rec ? s.rec.status : ""]);
+
+  const notes = [["Makeup hours report"], [stamp], [],
+                 ["Students with attendance", report.students.length],
+                 ["Owe makeup hours", report.owing.length],
+                 ["Hours outstanding", report.owing.reduce((a, s) => a + s.owed, 0)],
+                 ["Behind pace this month", report.behind.length],
+                 ["Hours to book this month", report.behind.reduce((a, s) => a + s.toSchedule, 0)],
+                 ["On hold", report.held.length],
+                 ["Enrolled, never attended", report.neverAttended.length], []];
+  for (const w of report.warnings) notes.push(["Note", w]);
+
+  return [
+    { name: "Owes hours", rows: owes },
+    { name: "Behind pace", rows: behind },
+    { name: "Missed dates", rows: missed },
+    { name: "Never attended", rows: never },
+    { name: "On hold", rows: held },
+    { name: "Summary", rows: notes },
+  ];
+}
+
+el("download").addEventListener("click", async () => {
+  if (!report) return;
+  const button = el("download");
+  button.disabled = true;
+  try {
+    const blob = await workbook(exportRows());
+    const d = report.dataThrough;
+    const name = "makeup-hours-" + d.y + "-" + String(d.m).padStart(2, "0") + "-" + String(d.d).padStart(2, "0") + ".xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (err) {
+    say("Export failed: " + esc(err.message), "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 
 el("find").addEventListener("input", () => renderTable());
 
