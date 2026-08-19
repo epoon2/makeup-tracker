@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import math
 import datetime as dt
 from dataclasses import dataclass, field
 
@@ -71,7 +72,10 @@ def _prorated_requirement(
     if not full:
         return plan_hours, (active_from if active_from > first else None)
     covered = [d for d in full if active_from <= d <= active_to]
-    scaled = round(plan_hours * len(covered) / len(full))
+    # Half-up, not Python's banker's rounding, so this matches the browser engine's
+    # Math.round exactly. A 0.5 that rounds down here and up there is a parity failure
+    # that only shows on a handful of students and is miserable to track down.
+    scaled = math.floor(plan_hours * len(covered) / len(full) + 0.5)
     return max(0, int(scaled)), (active_from if active_from > first else None)
 
 
