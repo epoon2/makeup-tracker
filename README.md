@@ -96,11 +96,14 @@ enrollment details from "in memory until the tab closes" to "on this machine unt
 cleared". **Forget stored data** erases it. Nothing is uploaded either way. Works when the
 file is opened directly from disk, not only when served.
 
-## Not in scope
+## Finding a student
 
-Real exports are never committed. They carry personal data for roughly 400 minors, so
-`testdata/` is git-ignored and the tool does all of its work in the browser, with no server
-and no upload.
+The search box in the header covers every student in the run, not just the tab on screen,
+which is the thing ctrl+F cannot do: a student who owes nothing does not appear on the
+Owes tab at all, so there is no text on the page to find. Each result says which list the
+student is in, picking one opens their record with the working already expanded, and the
+review queue narrows to that student's questions. Press `/` to jump to the box, arrow keys
+and Enter to choose, Escape to clear.
 
 ## The review queue
 
@@ -118,3 +121,9 @@ question with the likely answer marked:
 Answers save automatically and an answered question does not come back. **Save answers to
 a file** writes a small JSON file; **Load answers** merges one back in rather than
 replacing, so loading a colleague's copy cannot silently drop answers given here.
+
+## Not in scope
+
+Real exports are never committed. They carry personal data for roughly 400 minors, so
+`testdata/` is git-ignored and the tool does all of its work in the browser, with no server
+and no upload.
