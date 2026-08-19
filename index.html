@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Makeup Hours — Mathnasium Temple City</title>
+<style>
+  :root {
+    --ink: #14181d; --muted: #5b6775; --line: #dfe4ea; --bg: #f6f8fa;
+    --panel: #ffffff; --accent: #2f6fd0; --warn: #8a5a00; --warn-bg: #fff6e0;
+    --bad: #a3261f; --ok: #1f7a4d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 20px 28px; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 28px 80px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 18px 20px; margin-bottom: 18px;
+  }
+  .drops { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 8px; padding: 22px 16px;
+    text-align: center; background: var(--panel); cursor: pointer; transition: .12s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #f2f7ff; }
+  .drop.loaded { border-style: solid; border-color: var(--ok); background: #f2fbf6; }
+  .drop h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .drop p { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .drop .file { margin-top: 8px; font-size: 12.5px; color: var(--ok); font-weight: 600; word-break: break-all; }
+  button {
+    font: inherit; font-weight: 600; padding: 9px 18px; border-radius: 6px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button[disabled] { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: var(--panel); color: var(--accent); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .stamp {
+    display: inline-block; padding: 3px 9px; border-radius: 999px;
+    background: #eef2f7; color: var(--muted); font-size: 12.5px; font-weight: 600;
+  }
+  .stamp.live { background: #e7f3ea; color: var(--ok); }
+  .notice { background: var(--warn-bg); border: 1px solid #f0dca8; color: var(--warn);
+            border-radius: 6px; padding: 10px 14px; font-size: 13.5px; margin-top: 10px; }
+  .err { background: #fdeceb; border-color: #f4c3bf; color: var(--bad); }
+  #log { font: 12.5px/1.6 ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
+         white-space: pre-wrap; margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Makeup Hours — Mathnasium Temple City</h1>
+  <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="drops">
+      <div class="drop" id="dropAtt" tabindex="0" role="button">
+        <h3>Student Attendance Report</h3>
+        <p>One row per visit. Drop the .xlsx or click to browse.</p>
+        <div class="file" id="nameAtt"></div>
+      </div>
+      <div class="drop" id="dropStu" tabindex="0" role="button">
+        <h3>Students Export</h3>
+        <p>One row per student record. Drop the .xlsx or click to browse.</p>
+        <div class="file" id="nameStu"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="run" disabled>Run</button>
+      <span class="stamp" id="stamp">No data loaded</span>
+    </div>
+    <div id="messages"></div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<input type="file" id="picker" accept=".xlsx" hidden>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   ZIP reader.
+
+   An .xlsx is a ZIP of XML parts. Rather than ship a library, this walks the
+   central directory and inflates each entry with DecompressionStream, which is
+   built into the browser. That keeps the page a single file with no network
+   dependency, which matters because the exports contain student data and this
+   thing should never need to talk to anything.
+--------------------------------------------------------------------------- */
+
+const SIG_EOCD = 0x06054b50;
+const SIG_EOCD64 = 0x06064b50;
+const SIG_CENTRAL = 0x02014b50;
+
+function findEndOfCentralDirectory(view) {
+  // The EOCD record sits at the end, after a comment of unknown length, so scan
+  // backwards for the signature rather than assuming it is the last 22 bytes.
+  const max = Math.min(view.byteLength, 0xffff + 22);
+  for (let back = 22; back <= max; back++) {
+    const at = view.byteLength - back;
+    if (view.getUint32(at, true) === SIG_EOCD) return at;
+  }
+  throw new Error("Not a valid .xlsx file (no ZIP end-of-directory record).");
+}
+
+function readDirectory(buffer) {
+  const view = new DataView(buffer);
+  const eocd = findEndOfCentralDirectory(view);
+  let count = view.getUint16(eocd + 10, true);
+  let start = view.getUint32(eocd + 16, true);
+
+  // ZIP64: a spreadsheet with enough parts overflows the 32-bit fields, which show
+  // up as 0xffffffff. The locator sits immediately before the EOCD.
+  if (start === 0xffffffff || count === 0xffff) {
+    const locator = eocd - 20;
+    if (locator >= 0 && view.getUint32(locator, true) === 0x07064b50) {
+      const at = Number(view.getBigUint64(locator + 8, true));
+      if (view.getUint32(at, true) === SIG_EOCD64) {
+        count = Number(view.getBigUint64(at + 32, true));
+        start = Number(view.getBigUint64(at + 48, true));
+      }
+    }
+  }
+
+  const entries = new Map();
+  let at = start;
+  for (let i = 0; i < count; i++) {
+    if (view.getUint32(at, true) !== SIG_CENTRAL) break;
+    const method = view.getUint16(at + 10, true);
+    const compressed = view.getUint32(at + 20, true);
+    const nameLen = view.getUint16(at + 28, true);
+    const extraLen = view.getUint16(at + 30, true);
+    const commentLen = view.getUint16(at + 32, true);
+    const localAt = view.getUint32(at + 42, true);
+    const name = new TextDecoder().decode(new Uint8Array(buffer, at + 46, nameLen));
+    entries.set(name, { method, compressed, localAt });
+    at += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+async function inflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function readEntry(buffer, entry) {
+  const view = new DataView(buffer);
+  // The local header repeats the name and extra lengths, and the extra field length
+  // often differs from the central directory's, so read it here rather than reuse.
+  const nameLen = view.getUint16(entry.localAt + 26, true);
+  const extraLen = view.getUint16(entry.localAt + 28, true);
+  const dataAt = entry.localAt + 30 + nameLen + extraLen;
+  const raw = new Uint8Array(buffer, dataAt, entry.compressed);
+  if (entry.method === 0) return raw;
+  if (entry.method === 8) return await inflate(raw);
+  throw new Error("Unsupported compression in .xlsx (method " + entry.method + ").");
+}
+
+/* ---------------------------------------------------------------------------
+   XLSX sheet reader. Returns an array of plain objects keyed by header text.
+--------------------------------------------------------------------------- */
+
+function columnIndex(ref) {
+  // "BC12" -> 54. Letters only; the row number is ignored.
+  let n = 0;
+  for (let i = 0; i < ref.length; i++) {
+    const code = ref.charCodeAt(i);
+    if (code < 65 || code > 90) break;
+    n = n * 26 + (code - 64);
+  }
+  return n - 1;
+}
+
+// Excel serial date -> M/D/YYYY. Day 60 is Excel's non-existent 29 Feb 1900, so the
+// epoch is 30 Dec 1899 and serials above 60 line up without a correction.
+function serialToDate(serial) {
+  const ms = Math.round((serial - 25569) * 86400000);
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return String(serial);
+  return (d.getUTCMonth() + 1) + "/" + d.getUTCDate() + "/" + d.getUTCFullYear();
+}
+
+function textOf(node) {
+  // Shared strings can be split across runs; concatenate every <t> underneath.
+  const parts = node.getElementsByTagName("t");
+  if (!parts.length) return "";
+  let out = "";
+  for (let i = 0; i < parts.length; i++) out += parts[i].textContent;
+  return out;
+}
+
+async function readSheet(buffer) {
+  const entries = readDirectory(buffer);
+  const decoder = new TextDecoder();
+  const parser = new DOMParser();
+
+  const sharedEntry = entries.get("xl/sharedStrings.xml");
+  const shared = [];
+  if (sharedEntry) {
+    const doc = parser.parseFromString(decoder.decode(await readEntry(buffer, sharedEntry)), "application/xml");
+    const items = doc.getElementsByTagName("si");
+    for (let i = 0; i < items.length; i++) shared.push(textOf(items[i]));
+  }
+
+  // Prefer the first sheet by workbook order; fall back to any sheet part.
+  let sheetName = "xl/worksheets/sheet1.xml";
+  if (!entries.has(sheetName)) {
+    sheetName = [...entries.keys()].find((k) => /^xl\/worksheets\/.*\.xml$/.test(k));
+    if (!sheetName) throw new Error("No worksheet found inside the .xlsx.");
+  }
+
+  const doc = parser.parseFromString(decoder.decode(await readEntry(buffer, entries.get(sheetName))), "application/xml");
+  const rowNodes = doc.getElementsByTagName("row");
+  const grid = [];
+  for (let r = 0; r < rowNodes.length; r++) {
+    const cells = rowNodes[r].getElementsByTagName("c");
+    const row = [];
+    for (let c = 0; c < cells.length; c++) {
+      const cell = cells[c];
+      const ref = cell.getAttribute("r");
+      const at = ref ? columnIndex(ref) : c;
+      const type = cell.getAttribute("t");
+      let value = "";
+      if (type === "inlineStr") {
+        value = textOf(cell);
+      } else {
+        const v = cell.getElementsByTagName("v")[0];
+        const raw = v ? v.textContent : "";
+        if (type === "s") value = shared[Number(raw)] ?? "";
+        else if (type === "b") value = raw === "1" ? "TRUE" : "FALSE";
+        else value = raw;
+      }
+      row[at] = value;
+    }
+    grid.push(row);
+  }
+  if (!grid.length) return [];
+
+  const headers = (grid[0] || []).map((h) => String(h == null ? "" : h).trim());
+  const records = [];
+  for (let r = 1; r < grid.length; r++) {
+    const row = grid[r];
+    if (!row || !row.some((cell) => cell !== undefined && cell !== "")) continue;
+    const record = {};
+    for (let c = 0; c < headers.length; c++) {
+      const key = headers[c];
+      if (!key || key in record) continue; // first wins; the roster ships a duplicate Lead Id
+      record[key] = row[c] === undefined ? "" : row[c];
+    }
+    records.push(record);
+  }
+  return { headers, records, serialToDate };
+}
+
+/* ---------------------------------------------------------------------------
+   File intake
+--------------------------------------------------------------------------- */
+
+const state = { attendance: null, roster: null };
+const el = (id) => document.getElementById(id);
+
+function say(html, kind) {
+  const box = document.createElement("div");
+  box.className = "notice" + (kind === "error" ? " err" : "");
+  box.innerHTML = html;
+  el("messages").appendChild(box);
+}
+
+function clearMessages() { el("messages").innerHTML = ""; }
+
+async function accept(file, which) {
+  clearMessages();
+  try {
+    const buffer = await file.arrayBuffer();
+    const sheet = await readSheet(buffer);
+    state[which] = sheet;
+    const drop = which === "attendance" ? el("dropAtt") : el("dropStu");
+    const label = which === "attendance" ? el("nameAtt") : el("nameStu");
+    drop.classList.add("loaded");
+    label.textContent = file.name + " — " + sheet.records.length.toLocaleString() + " rows";
+    el("run").disabled = !(state.attendance && state.roster);
+    el("log").textContent =
+      (state.attendance ? "attendance columns: " + state.attendance.headers.filter(Boolean).join(", ") + "\n" : "") +
+      (state.roster ? "roster columns: " + state.roster.headers.filter(Boolean).length + " found\n" : "");
+  } catch (err) {
+    say("Could not read <b>" + file.name + "</b>: " + err.message, "error");
+  }
+}
+
+function wireDrop(node, which) {
+  node.addEventListener("click", () => {
+    const picker = el("picker");
+    picker.onchange = () => { if (picker.files[0]) accept(picker.files[0], which); picker.value = ""; };
+    picker.click();
+  });
+  node.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); node.click(); } });
+  node.addEventListener("dragover", (e) => { e.preventDefault(); node.classList.add("over"); });
+  node.addEventListener("dragleave", () => node.classList.remove("over"));
+  node.addEventListener("drop", (e) => {
+    e.preventDefault(); node.classList.remove("over");
+    const file = e.dataTransfer.files[0];
+    if (file) accept(file, which);
+  });
+}
+
+wireDrop(el("dropAtt"), "attendance");
+wireDrop(el("dropStu"), "roster");
+
+el("run").addEventListener("click", () => {
+  clearMessages();
+  say("Reader is in place. The analysis engine lands in the next commit.");
+});
+
+window.__mt = { readSheet, readDirectory, state };
+</script>
+</body>
+</html>
