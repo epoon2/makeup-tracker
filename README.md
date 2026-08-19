@@ -85,6 +85,17 @@ Each student's regular weekly schedule is inferred from their attendance history
 scheduled date with no attendance is reported as a missed date. Today is never counted as
 missed, because attendance is entered at end of day.
 
+## Remembering the exports
+
+Dropped exports are kept in the browser's IndexedDB on that machine, so opening the page
+reloads the last pair and re-runs automatically. Raw `.xlsx` bytes are stored rather than
+parsed rows, so a later change to the parser cannot leave a stale cache behind.
+
+This is a deliberate trade and the page says so out loud: it moves student names and
+enrollment details from "in memory until the tab closes" to "on this machine until
+cleared". **Forget stored data** erases it. Nothing is uploaded either way. Works when the
+file is opened directly from disk, not only when served.
+
 ## Not in scope
 
 Real exports are never committed. They carry personal data for roughly 400 minors, so
