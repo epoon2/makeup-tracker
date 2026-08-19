@@ -34,6 +34,7 @@ async def main():
         print("tabs:", tabs)
         rows = await pg.eval_on_selector_all("tr.head", "els => els.length")
         print("rows in first tab:", rows)
+        await pg.click('.tab[data-tab="behind"]')
         await pg.click("tr.head")
         det = await pg.eval_on_selector_all("tr.detail:not([hidden])", "els => els.length")
         print("expanded detail rows:", det)
@@ -42,9 +43,9 @@ async def main():
         await pg.click('.tab[data-tab="never"]')
         print("never-attended rows:", await pg.eval_on_selector_all("#tableWrap tbody tr", "els => els.length"))
         await pg.click('.tab[data-tab="owing"]')
-        await pg.fill("#find", "a")
+        await pg.fill("#globalFind", "a")
         print("filtered rows:", await pg.eval_on_selector_all("tr.head", "els => els.length"))
-        await pg.fill("#find", "")
+        await pg.fill("#globalFind", "")
         async with pg.expect_download() as dl:
             await pg.click("#download")
         d = await dl.value

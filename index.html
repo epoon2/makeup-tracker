@@ -81,6 +81,21 @@
   .detail dd { margin: 0; font-size: 13px; }
   .dates { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; }
   .empty { color: var(--muted); padding: 26px 4px; text-align: center; }
+  .hrow { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+  .finder { position: relative; min-width: 300px; }
+  .finder input { width: 100%; font: inherit; font-size: 14px; padding: 9px 13px;
+                  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  .finder input:focus { outline: 2px solid #cfe0f7; border-color: var(--accent); background: var(--panel); }
+  .hits { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; right: 0; max-height: 340px;
+          overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          box-shadow: 0 8px 26px rgba(20,24,29,.13); }
+  .hit { display: flex; justify-content: space-between; gap: 10px; align-items: center;
+         padding: 9px 13px; cursor: pointer; border-bottom: 1px solid #f2f5f8; }
+  .hit:last-child { border-bottom: 0; }
+  .hit:hover, .hit.on { background: #f2f7ff; }
+  .hit .nm { font-size: 13.5px; font-weight: 600; }
+  .hit .meta { font-size: 12px; color: var(--muted); }
+  .hits .none { padding: 14px; color: var(--muted); font-size: 13px; text-align: center; }
   .q { border-top: 1px solid #eef1f5; padding: 12px 2px; }
   .q:first-child { border-top: 0; }
   .q .who { font-weight: 600; }
@@ -100,8 +115,16 @@
 </head>
 <body>
 <header>
-  <h1>Makeup Hours — Mathnasium Temple City</h1>
-  <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+  <div class="hrow">
+    <div>
+      <h1>Makeup Hours — Mathnasium Temple City</h1>
+      <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+    </div>
+    <div class="finder" id="finder" hidden>
+      <input type="search" id="globalFind" placeholder="Search students    /" autocomplete="off" spellcheck="false">
+      <div class="hits" id="findHits" hidden></div>
+    </div>
+  </div>
 </header>
 
 <main>
@@ -145,7 +168,7 @@
       <div class="row" style="justify-content:space-between">
         <div class="tabs" id="tabs"></div>
         <div class="toolbar">
-          <input type="search" id="find" placeholder="Filter by name" autocomplete="off">
+          <button class="ghost" id="clearFocus" hidden>Show everyone</button>
           <button class="ghost" id="download">Export to Excel</button>
         </div>
       </div>
@@ -1211,20 +1234,31 @@ let queue = [];
 
 function renderQueue() {
   queue = buildQuestions(report);
+  if (focusKey) queue = queue.filter((q) => q.key === focusKey);
   const panel = el("queuePanel");
   const anyAnswers = Object.keys(overrides.students).length > 0;
-  panel.hidden = !queue.length && !anyAnswers;
-  if (panel.hidden) return;
+  panel.hidden = !queue.length && !anyAnswers && !focusKey;
+  if (panel.hidden) {
+    // Clear as well as hide. Leaving the old questions in the DOM means a later unhide
+    // flashes someone else's name before the rebuild lands.
+    el("queueList").innerHTML = "";
+    return;
+  }
 
   el("queueTitle").textContent = queue.length
     ? queue.length + " thing" + (queue.length === 1 ? "" : "s") + " the exports could not tell me"
-    : "Nothing left to confirm";
+    : focusKey ? "Nothing to confirm for this student" : "Nothing left to confirm";
   el("queueSub").textContent = anyAnswers
     ? "· " + Object.keys(overrides.students).length + " student(s) have saved answers"
     : "";
 
   const list = el("queueList");
-  if (!queue.length) { list.innerHTML = '<div class="empty">All answered. Saved answers still apply.</div>'; return; }
+  if (!queue.length) {
+    list.innerHTML = '<div class="empty">' +
+      (focusKey ? "Their schedule and months all read cleanly from the exports."
+                : "All answered. Saved answers still apply.") + "</div>";
+    return;
+  }
 
   list.innerHTML = queue.slice(0, 40).map((q, i) =>
     '<div class="q"><div class="who">' + esc(q.who) + "</div>" +
@@ -1375,12 +1409,15 @@ function detailFor(s) {
   return '<dl>' + rows.join("") + "</dl>";
 }
 
+let focusKey = null;
+
 function renderTable() {
-  const filter = el("find").value.trim().toLowerCase();
+  const filter = focusKey ? "" : searchTerm();
   const wrap = el("tableWrap");
 
   if (activeTab === "never") {
-    const list = report.neverAttended.filter((r) => !filter || displayName(r.key).toLowerCase().includes(filter));
+    const list = report.neverAttended.filter((r) =>
+      focusKey ? r.key === focusKey : (!filter || displayName(r.key).toLowerCase().includes(filter)));
     wrap.innerHTML = !list.length ? '<div class="empty">Nobody here.</div>' :
       "<table><thead><tr><th>Student</th><th>Status</th><th>Enrolled since</th><th>Last attendance on record</th></tr></thead><tbody>" +
       list.map((r) => "<tr><td>" + esc(displayName(r.key)) + "</td><td>" + esc(r.status) + "</td><td>" +
@@ -1390,7 +1427,8 @@ function renderTable() {
     return;
   }
 
-  const list = rowsFor(activeTab).filter((s) => !filter || s.display.toLowerCase().includes(filter));
+  const list = rowsFor(activeTab).filter((s) =>
+    focusKey ? s.key === focusKey : (!filter || s.display.toLowerCase().includes(filter)));
   if (!list.length) { wrap.innerHTML = '<div class="empty">Nobody here.</div>'; return; }
 
   wrap.innerHTML =
@@ -1417,10 +1455,16 @@ function renderTable() {
       row.hidden = !row.hidden;
     });
   });
+  // Searching for one student should show their record, not make you click again.
+  if (focusKey && list.length === 1) {
+    const only = wrap.querySelector('tr.detail[data-d="0"]');
+    if (only) only.hidden = false;
+  }
 }
 
 function render() {
   el("results").hidden = false;
+  el("finder").hidden = false;
   el("stamp").className = "stamp live";
   el("stamp").textContent = "Calculating " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
                             "  ·  last attendance " + fmtLong(report.dataThrough) +
@@ -1689,6 +1733,125 @@ el("forget").addEventListener("click", async () => {
   say("Stored exports erased from this machine.");
 });
 
+/* ---------------------------------------------------------------------------
+   Student search.
+
+   The per-tab filter could only find someone already on the tab you were looking at, so
+   a student who owes nothing was invisible from the Owes tab and people fell back to
+   ctrl+F, which only searches what is rendered. This searches every student in the run,
+   says which list each one is in, and opens their record.
+--------------------------------------------------------------------------- */
+
+function searchTerm() {
+  return el("globalFind").value.trim().toLowerCase();
+}
+
+function statusOf(s) {
+  if (s.onHold) return { text: "on hold", tab: "held" };
+  if (s.owed > 0) return { text: s.owed + " hrs owed", tab: "owing" };
+  if (s.toSchedule > 0) return { text: s.toSchedule + " makeup hrs this month", tab: "behind" };
+  return { text: "up to date", tab: "all" };
+}
+
+function searchHits(term) {
+  if (!term) return [];
+  const hits = [];
+  for (const s of report.students) {
+    if (!s.display.toLowerCase().includes(term)) continue;
+    const st = statusOf(s);
+    hits.push({ key: s.key, name: s.display, meta: st.text, tab: st.tab, rank: s.display.toLowerCase().indexOf(term) });
+  }
+  for (const r of report.neverAttended) {
+    const name = displayName(r.key);
+    if (!name.toLowerCase().includes(term)) continue;
+    hits.push({ key: r.key, name, meta: "enrolled, never attended", tab: "never", rank: name.toLowerCase().indexOf(term) });
+  }
+  // Prefix matches first, so typing a surname does not bury the person you meant.
+  hits.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+  return hits;
+}
+
+let hitIndex = 0;
+
+function renderHits() {
+  const term = searchTerm();
+  const box = el("findHits");
+  if (!term || !report) { box.hidden = true; return; }
+  const hits = searchHits(term).slice(0, 12);
+  box.hidden = false;
+  if (!hits.length) { box.innerHTML = '<div class="none">No student matching that name.</div>'; return; }
+  hitIndex = Math.min(hitIndex, hits.length - 1);
+  box.innerHTML = hits.map((h, i) =>
+    '<div class="hit' + (i === hitIndex ? " on" : "") + '" data-i="' + i + '">' +
+    '<span class="nm">' + esc(h.name) + "</span>" +
+    '<span class="meta">' + esc(h.meta) + "</span></div>").join("");
+  box.querySelectorAll(".hit").forEach((node) => {
+    node.onclick = () => openStudent(hits[+node.dataset.i]);
+  });
+}
+
+function openStudent(hit) {
+  focusKey = hit.key;
+  activeTab = hit.tab;
+  el("findHits").hidden = true;
+  el("clearFocus").hidden = false;
+  renderQueue();
+  renderTabs();
+  wireTabs();
+  renderTable();
+  el("results").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function clearFocus() {
+  focusKey = null;
+  el("clearFocus").hidden = true;
+  el("globalFind").value = "";
+  el("findHits").hidden = true;
+  renderQueue();
+  renderTabs();
+  wireTabs();
+  renderTable();
+}
+
+el("globalFind").addEventListener("input", () => {
+  hitIndex = 0;
+  if (focusKey) { focusKey = null; el("clearFocus").hidden = true; }
+  renderHits();
+  renderTable();
+});
+
+el("globalFind").addEventListener("keydown", (e) => {
+  const hits = searchHits(searchTerm()).slice(0, 12);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!hits.length) return;
+    hitIndex = (hitIndex + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length;
+    renderHits();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (hits[hitIndex]) openStudent(hits[hitIndex]);
+  } else if (e.key === "Escape") {
+    clearFocus();
+    el("globalFind").blur();
+  }
+});
+
+el("clearFocus").addEventListener("click", clearFocus);
+
+document.addEventListener("click", (e) => {
+  if (!el("finder").contains(e.target)) el("findHits").hidden = true;
+});
+
+// "/" jumps to the box the way it does in most tools, without stealing the key from
+// anyone actually typing into a field.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.metaKey || e.ctrlKey) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea") return;
+  e.preventDefault();
+  el("globalFind").focus();
+});
+
 el("exportAnswers").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(overrides, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1740,7 +1903,7 @@ el("clearAnswers").addEventListener("click", async () => {
   say("All saved answers cleared.");
 });
 
-el("find").addEventListener("input", () => renderTable());
+
 
 el("run").addEventListener("click", () => {
   clearMessages();
@@ -1760,7 +1923,8 @@ el("run").addEventListener("click", () => {
 restoreSaved();
 
 window.__mt = { readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, buildQuestions,
-                get overrides() { return overrides; }, set overrides(v) { overrides = v; }, roundHours, parseDate, inferSchedule, settle,
+                get overrides() { return overrides; }, set overrides(v) { overrides = v; },
+                get focusKey() { return focusKey; }, renderQueue: () => renderQueue(), roundHours, parseDate, inferSchedule, settle,
                 get report() { return report; } };
 </script>
 </body>
