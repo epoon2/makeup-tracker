@@ -709,6 +709,20 @@ function settle(months) {
    Report assembly
 --------------------------------------------------------------------------- */
 
+function payableWindow(firstN, throughN) {
+  // The span the report is really about: two months back from the newest attendance.
+  // Anything older has expired out of the grace window, so showing the full export range
+  // would overstate what the numbers cover. Clipped to the start of the export, because
+  // with less than two months of data the window is everything there is. Display only;
+  // the calculation still runs over the whole export, since a partial first month cannot
+  // produce a monthly requirement.
+  const through = fromDayNumber(throughN);
+  let y = through.y, m = through.m - 2;
+  if (m <= 0) { m += 12; y -= 1; }
+  const day = Math.min(through.d, lastDayOf(y, m));
+  return { fromN: Math.max(firstN, mkDate(y, m, day).n), toN: throughN };
+}
+
 function buildReport(attendance, roster, todayN) {
   const { visits, people, warnings } = normalise(attendance, roster);
   if (!visits.length) throw new Error("The attendance export had no usable rows.");
@@ -771,8 +785,10 @@ function buildReport(attendance, roster, todayN) {
     warnings.push(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates");
   }
 
+  const win = payableWindow(firstN, dataThroughN);
   return {
     today, dataThrough: fromDayNumber(dataThroughN), span, students, neverAttended, warnings,
+    windowFrom: fromDayNumber(win.fromN), windowTo: fromDayNumber(win.toN),
     owing: students.filter((s) => s.owed > 0 && !s.onHold).sort((a, b) => b.owed - a.owed || a.display.localeCompare(b.display)),
     behind: students.filter((s) => s.toSchedule > 0 && !s.onHold).sort((a, b) => b.toSchedule - a.toSchedule || a.display.localeCompare(b.display)),
     held: students.filter((s) => s.onHold).sort((a, b) => a.display.localeCompare(b.display)),
@@ -910,8 +926,9 @@ function renderTable() {
 function render() {
   el("results").hidden = false;
   el("stamp").className = "stamp live";
-  el("stamp").textContent = "Last attendance in this export: " + fmtLong(report.dataThrough) +
-                            "  ·  analysed as of " + fmtLong(report.today);
+  el("stamp").textContent = "Calculating " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
+                            "  ·  last attendance " + fmtLong(report.dataThrough) +
+                            "  ·  run " + fmtLong(report.today);
   renderCards();
   renderTabs();
   renderTable();
@@ -1073,7 +1090,8 @@ async function workbook(sheets) {
 }
 
 function exportRows() {
-  const stamp = "data through " + fmtLong(report.dataThrough) + ", run " + fmtLong(report.today);
+  const stamp = "calculating " + fmtLong(report.windowFrom) + " to " + fmtLong(report.windowTo) +
+                ", last attendance " + fmtLong(report.dataThrough) + ", run " + fmtLong(report.today);
 
   const owes = [["Student", "Plan (hrs/mo)", "Schedule", "Schedule confident", "Hours owed",
                  "Oldest debt", "Needs checking", "Missed dates"]];

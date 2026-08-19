@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import collections
 import datetime as dt
 from dataclasses import dataclass, field
@@ -52,10 +53,31 @@ class StudentReport:
         return sorted(out)
 
 
+def payable_window(first_visit: dt.date, data_through: dt.date) -> tuple[dt.date, dt.date]:
+    """The span the report is really about: two months back from the newest attendance.
+
+    Anything older than that has expired out of the grace window, so showing the full
+    export range would overstate what the numbers cover. Clipped to the start of the
+    export, because with less than two months of data the window is simply everything
+    there is. Display only; the calculation still runs over the whole export, since a
+    partial first month cannot produce a monthly requirement.
+    """
+    month = data_through.month - 2
+    year = data_through.year
+    if month <= 0:
+        month += 12
+        year -= 1
+    day = min(data_through.day, calendar.monthrange(year, month)[1])
+    back = dt.date(year, month, day)
+    return max(first_visit, back), data_through
+
+
 @dataclass
 class Report:
     generated_for: dt.date
     data_through: dt.date
+    window_from: dt.date
+    window_to: dt.date
     months: list[tuple[int, int]]
     students: list[StudentReport]
     never_attended: list[RosterRecord]
@@ -156,9 +178,12 @@ def build(loaded: Loaded, today: dt.date | None = None) -> Report:
             "their missed dates and behind-pace flags are estimates"
         )
 
+    window_from, window_to = payable_window(first_visit, data_through)
     return Report(
         generated_for=today,
         data_through=data_through,
+        window_from=window_from,
+        window_to=window_to,
         months=span,
         students=students,
         never_attended=never,
