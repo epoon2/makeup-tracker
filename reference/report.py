@@ -198,6 +198,18 @@ def build(loaded: Loaded, today: dt.date | None = None,
         if over and record and record.status.casefold() == "enrolled":
             overrides.close_holds(key, month_key(data_through.year, data_through.month))
 
+        # Exact hold periods, parsed once per student
+        hold_ranges = []
+        if over:
+            for period in over.hold_dates:
+                try:
+                    a = dt.date.fromisoformat(period["from"])
+                    b = dt.date.fromisoformat(period["to"])
+                except (KeyError, ValueError):
+                    continue
+                if a <= b:
+                    hold_ranges.append((a, b))
+
         months = []
         schedules: dict[tuple[int, int], Schedule] = {}
         for (y, m) in span:
@@ -218,6 +230,8 @@ def build(loaded: Loaded, today: dt.date | None = None,
                     on_hold=over.held(mk) if over else None,
                     plan_override=(over.plan_hours.get(mk) if over else None),
                     force_not_enrolled=bool(over and mk in over.not_enrolled),
+                    hold_ranges=hold_ranges,
+                    hour_adjust=(over.hour_adjust.get(mk, 0) if over else 0),
                 )
             )
         # The student-level schedule is the one that applied most recently, since that is
