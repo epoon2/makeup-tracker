@@ -47,7 +47,7 @@ person to reconcile, not auto-corrected.
 
 ## Checking it
 
-1. Open `index.html`, click **Run self-check** at the bottom. Expect **81 checks passed**.
+1. Open `index.html`, click **Run self-check** at the bottom. Expect **89 checks passed**.
 2. Drop both exports, click Run, compare the five cards above.
 3. With Python: `python3 tests/parity_browser.py` must report **0 differing** across all
    students (`TODAY` in that script is pinned to 2026-08-20 for these inputs).

@@ -200,8 +200,22 @@ importer**: a third optional drop zone that turns hold periods into closed hold
 overrides and removes hold questions from the queue entirely. Waiting on a sample
 export from Jorge to learn its columns; do not guess the format.
 
-**The audit panel points, it never changes numbers.** Thresholds are deliberately
-conservative (`EXCESS_WORTH_ASKING = 3`); a list with false alarms stops being read.
+**The audit panel asks; answers correct the numbers** (changed 20 Aug 2026 at Jorge's
+direction from the earlier points-only design). Answers are stored as `auditChecked`
+ids plus `hourAdjust` per-month deltas in overrides; the deltas are applied to a
+month's attended hours in BOTH engines (`hour_adjust` in `reference/months.py`).
+Thresholds stay conservative (`EXCESS_WORTH_ASKING = 3`); a list with false alarms
+stops being read.
+
+**Holds can be exact dates.** `holdDates` overrides carry mid-month periods; a period
+covering every scheduled day acts as a whole-month hold, and a partial one prorates
+the month by the scheduled sessions it covers (both engines). Month-aligned typed
+dates are converted to clean month holds by `holdEntryFromDates`. Radius has no bulk
+hold export (verified in the live site 20 Aug 2026: Reports has none, the Student
+Management Excel export lacks hold dates); holds are read per student from
+Students -> Student Management -> student -> Enrollments -> Holds, which is why the
+tool takes typed dates. The internal JSON endpoints (`/Student/Enrollment_Read/{id}`,
+`/Student/Hold_Read`) exist if a fetcher is ever wanted; Jorge knows the tradeoff.
 
 ---
 
