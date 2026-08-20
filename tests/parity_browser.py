@@ -5,7 +5,7 @@ sys.path.insert(0, ".")
 from reference.loaders import load
 from reference.report import build
 
-TODAY = "2026-08-19"
+TODAY = "2026-08-20"
 
 async def js():
     async with async_playwright() as p:
