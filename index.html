@@ -115,6 +115,8 @@
   .bad-txt { color: var(--bad); font-weight: 600; }
   .checkfail { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; color: var(--bad);
                white-space: pre-wrap; margin-top: 8px; }
+  .qhead { margin: 14px 2px 2px; font-size: 12px; font-weight: 700; letter-spacing: .04em;
+           text-transform: uppercase; color: var(--muted); }
   .q { border-top: 1px solid #eef1f5; padding: 12px 2px; }
   .q:first-child { border-top: 0; }
   .q .who { font-weight: 600; }
@@ -1303,6 +1305,7 @@ function buildQuestions(rep) {
       // is asking a question with one answer wearing two labels.
       const offerNotEnrolled = !(s.rec && s.rec.status.toLowerCase() === "enrolled");
       out.push({
+        cat: likelyHold ? "hold" : "absent",
         key: s.key, id, who: s.display,
         ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
              "Right now that is charged as " + mo.required + " makeup hrs. Which was it?" +
@@ -1332,6 +1335,7 @@ function buildQuestions(rep) {
       const nextKey = lastMonth.m === 12 ? monthKey(lastMonth.y + 1, 1) : monthKey(lastMonth.y, lastMonth.m + 1);
       if (stoppedEarly && lastMonth.shortfall > 0 && !wasAnswered(s.key, id) && !isHeld(s.over, nextKey)) {
         out.push({
+          cat: "stopped",
           key: s.key, id, who: s.display,
           ask: "Last came " + fmtLong(fromDayNumber(lastVisit)) + ", partway through " + lastMonth.label +
                ", and is " + lastMonth.shortfall + " hrs short for it. Were they away, or did they go on hold?",
@@ -1354,6 +1358,7 @@ function buildQuestions(rep) {
       if (!wasAnswered(s.key, id)) {
         const raw = s.planInfo.raw, L = s.planInfo.sessionHours;
         out.push({
+          cat: "plan",
           key: s.key, id, who: s.display,
           ask: "Their plan says " + raw + "/month but their sessions run " + L + " hours, and there " +
                "is not enough history to tell whether " + raw + " means hours or sessions. Which is it?",
@@ -1388,6 +1393,7 @@ function buildQuestions(rep) {
         }
         options.push({ label: "Pick days", picker: true });
         out.push({
+          cat: "schedule",
           key: s.key, id, who: s.display,
           ask: "Their " + s.plan + " hr plan needs a weekly pattern and this one had to be guessed (" +
                s.schedule.reason + "). Is it " + scheduleLabel(s.schedule) + "?",
@@ -1396,8 +1402,21 @@ function buildQuestions(rep) {
       }
     }
   }
+  // Grouped so a person can work through one kind of answer at a time - the Radius hold
+  // screen open for the hold batch, then the rest - instead of context-switching per
+  // student. Likely holds first because they are the cheapest to confirm.
+  const ORDER = ["hold", "absent", "stopped", "plan", "schedule"];
+  out.sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.who.localeCompare(b.who));
   return out;
 }
+
+const QUEUE_HEADINGS = {
+  hold: "Looks like a hold — the Radius hold screen can confirm these",
+  absent: "A whole month with no attendance",
+  stopped: "Stopped attending partway through a month",
+  plan: "What the plan number means",
+  schedule: "Schedules that had to be guessed",
+};
 
 let queue = [];
 
@@ -1429,7 +1448,9 @@ function renderQueue() {
     return;
   }
 
+  let lastCat = null;
   list.innerHTML = queue.slice(0, 40).map((q, i) =>
+    (q.cat !== lastCat ? '<div class="qhead">' + esc(QUEUE_HEADINGS[(lastCat = q.cat)] || "") + "</div>" : "") +
     '<div class="q"><div class="who">' + esc(q.who) + "</div>" +
     '<div class="ask">' + esc(q.ask) + "</div>" +
     '<div class="opts">' + q.options.map((o, j) =>
