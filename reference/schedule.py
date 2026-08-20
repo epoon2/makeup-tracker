@@ -63,7 +63,9 @@ def infer(visits: list[Visit], required_hours: int) -> Schedule:
     data stops a student with one stray Saturday makeup from acquiring a Saturday
     schedule and then being marked absent every Saturday after.
     """
-    usable = [v for v in visits if v.hours > 0]
+    # Markers are makeup redemptions, dated wherever the credit belongs. Their weekday
+    # and their length say nothing about the student's real weekly pattern.
+    usable = [v for v in visits if v.hours > 0 and not v.marker]
     if not usable:
         return Schedule((), 1, False, "no attendance to infer from")
 
@@ -117,12 +119,12 @@ def infer_for_month(
     widening is backwards only: later months must not decide what an earlier month's
     schedule was.
     """
-    in_month = [v for v in visits if first <= v.date <= last and v.hours > 0]
+    in_month = [v for v in visits if first <= v.date <= last and v.hours > 0 and not v.marker]
     weeks = len({(v.date.isocalendar()[0], v.date.isocalendar()[1]) for v in in_month})
     if weeks >= 3:
         return infer(in_month, required_hours)
 
-    upto = [v for v in visits if v.date <= last and v.hours > 0]
+    upto = [v for v in visits if v.date <= last and v.hours > 0 and not v.marker]
     if not upto:
         return infer(visits, required_hours)
 

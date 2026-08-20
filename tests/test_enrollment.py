@@ -63,3 +63,19 @@ def test_current_hold_is_called_out_in_the_detail():
 def test_current_status_alone_never_proves_past_enrollment():
     # Reads Enrolled today, but nothing places them on the roster before the gap.
     assert resolve(rec(status="Enrolled"), [D(2026, 8, 4)], *JUL).basis != ENROLLED
+
+
+def test_markers_stay_out_of_schedule_inference():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.schedule import infer
+
+    visits = []
+    for w in range(5):
+        visits.append(Visit("t", dt.date(2026, 7, 6) + dt.timedelta(days=7 * w), 1, 8))
+        visits.append(Visit("t", dt.date(2026, 7, 8) + dt.timedelta(days=7 * w), 1, 8))
+    for w in range(3):
+        visits.append(Visit("t", dt.date(2026, 7, 11) + dt.timedelta(days=7 * w), 2, 8, marker=True))
+    schedule = infer(visits, 8)
+    assert schedule.weekdays == (0, 2)
+    assert schedule.session_hours == 1
