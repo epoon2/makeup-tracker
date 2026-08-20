@@ -910,6 +910,12 @@ function ovFor(key, create) {
   if (!rec && create) {
     rec = overrides.students[key] = { holds: [], holdDates: [], planHours: {}, hourAdjust: {}, notEnrolled: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [], auditChecked: [] };
   }
+  if (rec) {
+    // Backfill fields on records saved by an older version of the page.
+    rec.holdDates = rec.holdDates || [];
+    rec.hourAdjust = rec.hourAdjust || {};
+    rec.auditChecked = rec.auditChecked || [];
+  }
   return rec || null;
 }
 
@@ -1162,11 +1168,20 @@ function fmtMinutes(min) {
 function auditVisits(visits, typicalSessionHours, todayN) {
   const out = [];
   const seen = new Map();
+  const push = (entry) => {
+    // Stable id so an answer given today still matches the same finding on the
+    // next export: kind + date + how many of this kind already sit on that date.
+    const sameSoFar = out.filter((e) => e.kind === entry.kind &&
+      (e.date ? e.date.n : e.mk) === (entry.date ? entry.date.n : entry.mk)).length;
+    entry.id = entry.kind + "|" + (entry.date ? entry.date.n : entry.mk) + "|" + sameSoFar;
+    out.push(entry);
+  };
   const sorted = [...visits].sort((a, b) => a.date.n - b.date.n || (a.startMinutes || 0) - (b.startMinutes || 0));
   for (const v of sorted) {
+    const mk = monthKey(v.date.y, v.date.m);
     if (v.date.n > todayN) {
-      out.push({ key: v.key, date: v.date, kind: "future",
-                 detail: "dated " + fmt(v.date) + ", which has not happened yet" });
+      push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "future",
+             detail: "dated " + fmt(v.date) + ", which has not happened yet" });
     }
     if (!v.marker && v.startMinutes !== null && v.startMinutes !== undefined) {
       const weekend = weekdayOf(v.date.n) >= 5;
@@ -1174,30 +1189,31 @@ function auditVisits(visits, typicalSessionHours, todayN) {
                        (!weekend && v.startMinutes < WEEKDAY_OPEN_MINUTES);
       if (tooEarly) {
         const when = v.startMinutes < ANY_DAY_OPEN_MINUTES ? "before 8 am" : "on a weekday before the 1:30 pm opening";
-        out.push({ key: v.key, date: v.date, kind: "off-hours",
-                   detail: "starts " + fmtMinutes(v.startMinutes) + " " + when + ", and is not a 12 AM marker - makeup or typo?" });
+        push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "off-hours",
+               detail: "starts " + fmtMinutes(v.startMinutes) + " " + when + ", and is not a 12 AM marker - makeup or typo?" });
       }
     }
     if (!v.marker) {
       const dk = v.key + "|" + v.date.n + "|" + v.startMinutes + "|" + v.hours;
       seen.set(dk, (seen.get(dk) || 0) + 1);
       if (seen.get(dk) === 2) {
-        out.push({ key: v.key, date: v.date, kind: "duplicate",
-                   detail: "two identical entries on the same date and time" });
+        push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "duplicate",
+               detail: "two identical entries on the same date and time" });
       }
     }
     if (!v.marker && typicalSessionHours === 1 && v.hours >= 2) {
-      out.push({ key: v.key, date: v.date, kind: "folded",
-                 detail: v.hours + "-hour entry for a student whose sessions run 1 hour - if part of it is a makeup, log that hour as its own 12 AM entry" });
+      push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "folded",
+             detail: v.hours + "-hour entry for a student whose sessions run 1 hour - if part of it is a makeup, log that hour as its own 12 AM entry" });
     }
   }
   return out;
 }
 
-function auditMonth(key, label, required, attended, markerHours, onHold) {
+function auditMonth(key, label, required, attended, markerHours, onHold, mk) {
   if (onHold || required <= 0) return null;
   if (attended >= required + EXCESS_WORTH_ASKING && markerHours === 0) {
-    return { key, date: null, kind: "heavy-month",
+    return { key, date: null, mk, hours: attended - required, kind: "heavy-month",
+             id: "heavy-month|" + mk + "|0",
              detail: attended + " hrs in " + label + " against a requirement of " + required + ", with no 12 AM markers - folded makeup hours?" };
   }
   return null;
@@ -1341,7 +1357,7 @@ function buildReport(attendance, roster, todayN) {
     }
     const audit = auditVisits(list, schedule.sessionHours, todayN);
     for (const mo of months) {
-      const entry = auditMonth(key, mo.label, mo.required, mo.attended, mo.markerHours, mo.onHold);
+      const entry = auditMonth(key, mo.label, mo.required, mo.attended, mo.markerHours, mo.onHold, monthKey(mo.y, mo.m));
       if (entry) audit.push(entry);
     }
     const onSched = new Set(schedule.weekdays);
@@ -1572,33 +1588,94 @@ const QUEUE_HEADINGS = {
 
 let queue = [];
 
+// What each kind of finding can be answered with. Every answer either marks
+// the entry checked, or corrects the hours through a person-approved
+// adjustment - which is how confirming these raises the calculator's accuracy.
+function auditOptions(e) {
+  const check = (label) => ({ label, apply: () => {} });
+  const adjust = (label, deltas) => ({ label, apply: () => {
+    const rec = ovFor(e.key, true);
+    for (const [mk, d] of deltas) rec.hourAdjust[mk] = (rec.hourAdjust[mk] || 0) + d;
+  } });
+  if (e.kind === "off-hours") {
+    return [check("Real session or makeup at that time"), check("Typo - I will fix it in Radius")];
+  }
+  if (e.kind === "future") {
+    return [check("Wrong date - I will fix it in Radius")];
+  }
+  if (e.kind === "duplicate") {
+    return [check("Both entries really happened"),
+            adjust("Duplicate - ignore " + e.hours + " hr(s)", [[e.mk, -e.hours]])];
+  }
+  if (e.kind === "folded") {
+    const prior = report.span
+      .map(([y, m]) => monthKey(y, m))
+      .filter((mk) => mkIndex(mk) < mkIndex(e.mk));
+    const opts = [check("Real long session, all in this month"),
+                  check("1 hr was a makeup for this same month")];
+    for (const mk of prior.slice(-2)) {
+      opts.push(adjust("1 hr was a makeup for " + monthLabel(mk), [[e.mk, -1], [mk, 1]]));
+    }
+    return opts;
+  }
+  if (e.kind === "heavy-month") {
+    return [check("Real - the extra hours pay older debt"),
+            adjust("Double-logged - remove " + e.hours + " hr(s)", [[e.mk, -e.hours]])];
+  }
+  return [check("Checked")];
+}
+
 function renderAudit() {
   const entries = [];
   for (const s of report.students) {
-    for (const a of s.audit) entries.push({ who: s.display, key: s.key, ...a });
+    const checked = (s.over && s.over.auditChecked) || [];
+    for (const a of s.audit) {
+      if (!checked.includes(a.id)) entries.push({ who: s.display, ...a });
+    }
   }
-  if (focusKey) {
-    const mine = entries.filter((e) => e.key === focusKey);
-    entries.length = 0;
-    entries.push(...mine);
-  }
-  entries.sort((a, b) => a.who.localeCompare(b.who) || ((a.date ? a.date.n : 0) - (b.date ? b.date.n : 0)));
+  const totalChecked = report.students.reduce((n, s) =>
+    n + (((s.over && s.over.auditChecked) || []).length), 0);
+  const scoped = focusKey ? entries.filter((e) => e.key === focusKey) : entries;
+  scoped.sort((a, b) => a.who.localeCompare(b.who) || ((a.date ? a.date.n : 0) - (b.date ? b.date.n : 0)));
   const panel = el("auditPanel");
-  panel.hidden = !entries.length;
-  if (panel.hidden) { el("auditList").innerHTML = ""; return; }
+  panel.hidden = !scoped.length && !totalChecked;
+  if (panel.hidden || !scoped.length) {
+    el("auditList").innerHTML = panel.hidden ? "" :
+      '<div class="empty">' + (focusKey ? "Nothing odd for this student." : "All checked.") + "</div>";
+    if (!panel.hidden) el("auditTitle").textContent = totalChecked + " audit finding(s) checked";
+    return;
+  }
   const byStudent = new Map();
-  for (const e of entries) {
+  for (const e of scoped) {
     if (!byStudent.has(e.who)) byStudent.set(e.who, []);
     byStudent.get(e.who).push(e);
   }
   const groups = [...byStudent.entries()];
-  el("auditTitle").textContent = entries.length + " attendance entr" + (entries.length === 1 ? "y" : "ies") +
-    " look odd, across " + groups.length + " student" + (groups.length === 1 ? "" : "s");
+  const flat = [];
+  el("auditTitle").textContent = scoped.length + " attendance entr" + (scoped.length === 1 ? "y" : "ies") +
+    " look odd, across " + groups.length + " student" + (groups.length === 1 ? "" : "s") +
+    (totalChecked ? " · " + totalChecked + " checked" : "");
   el("auditList").innerHTML = groups.slice(0, 25).map(([who, list]) =>
     '<div class="q"><div class="who">' + esc(who) + ' <span class="pill mute">' + list.length + "</span></div>" +
-    list.map((e) => '<div class="ask">' + (e.date ? esc(fmtShort(e.date)) + " · " : "") + esc(e.detail) + "</div>").join("") +
-    "</div>"
+    list.map((e) => {
+      const idx = flat.push(e) - 1;
+      const opts = auditOptions(e);
+      return '<div class="ask">' + (e.date ? esc(fmtShort(e.date)) + " · " : "") + esc(e.detail) + "</div>" +
+        '<div class="opts">' + opts.map((o, j) =>
+          '<button class="ghost" data-aq="' + idx + '" data-ao="' + j + '">' + esc(o.label) + "</button>").join("") + "</div>";
+    }).join("") + "</div>"
   ).join("") + (groups.length > 25 ? '<div class="ask" style="padding-top:10px">Showing 25 of ' + groups.length + " students.</div>" : "");
+
+  el("auditList").querySelectorAll("button[data-aq]").forEach((b) => {
+    b.onclick = async () => {
+      const e = flat[+b.dataset.aq];
+      auditOptions(e)[+b.dataset.ao].apply();
+      const rec = ovFor(e.key, true);
+      if (!rec.auditChecked.includes(e.id)) rec.auditChecked.push(e.id);
+      await saveOverrides();
+      rerun();
+    };
+  });
 }
 
 function renderQueue() {
