@@ -750,7 +750,9 @@ function normalise(attendance, roster) {
 const WEEKS_PER_MONTH = 4;
 
 function inferSchedule(visits, requiredHours) {
-  const usable = visits.filter((v) => v.hours > 0);
+  // Markers are makeup redemptions, dated wherever the credit belongs. Their weekday
+  // and their length say nothing about the student's real weekly pattern.
+  const usable = visits.filter((v) => v.hours > 0 && !v.marker);
   if (!usable.length) return { weekdays: [], sessionHours: 1, confident: false, reason: "no attendance to infer from" };
 
   const lengths = new Map();
@@ -790,12 +792,12 @@ function inferScheduleForMonth(visits, requiredHours, firstN, lastN) {
   // that a whole-window inference reads as four scattered days, inventing missed sessions
   // in both months. Measured against students who fully met July, per-month inference
   // removed 17 invented scheduled days and scored better on every count.
-  const inMonth = visits.filter((v) => v.date.n >= firstN && v.date.n <= lastN && v.hours > 0);
+  const inMonth = visits.filter((v) => v.date.n >= firstN && v.date.n <= lastN && v.hours > 0 && !v.marker);
   const weeks = new Set(inMonth.map((v) => isoWeekKey(v.date.n))).size;
   if (weeks >= 3) return inferSchedule(inMonth, requiredHours);
 
   // Widen backwards only. Later months must not decide an earlier month's schedule.
-  const upto = visits.filter((v) => v.date.n <= lastN && v.hours > 0);
+  const upto = visits.filter((v) => v.date.n <= lastN && v.hours > 0 && !v.marker);
   if (!upto.length) return inferSchedule(visits, requiredHours);
 
   const widened = inferSchedule(upto, requiredHours);
@@ -1966,6 +1968,15 @@ function selfCheck() {
   is("time inside Attendance Date", startMinutesFor({ "Attendance Date": "8/5/2026 12:00 AM" }), 0);
   is("dedicated column wins", startMinutesFor({ "Start Time": "3:00 PM", "Attendance Date": "8/5/2026 12:00 AM" }), 900);
   is("dateless row has no time", startMinutesFor({ "Attendance Date": "8/5/2026" }), null);
+
+  // Markers must not join the schedule or stretch the typical session length.
+  const marked = weekly.concat([
+    Object.assign(visit(2026, 7, 11, 2), { marker: true }),
+    Object.assign(visit(2026, 7, 18, 2), { marker: true }),
+    Object.assign(visit(2026, 7, 25, 2), { marker: true }),
+  ]);
+  is("markers stay out of the schedule", inferSchedule(marked, 8).weekdays, [0, 2]);
+  is("markers do not set session length", inferSchedule(marked, 8).sessionHours, 1);
 
   return { ran, fails };
 }
