@@ -618,9 +618,10 @@ function parseDate(value) {
    Normalisation
 --------------------------------------------------------------------------- */
 
-// Columns that may carry the session's start time. Radius exports vary; the first
-// one present and parseable wins, and a time inside Attendance Date is the fallback.
-const TIME_COLUMNS = ["Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
+// Columns that may carry the session's start time. The real Radius attendance export
+// calls it "Arrival Time" (verified against the 8/20/2026 export, format "4:00 PM");
+// the rest are fallbacks, and a time inside Attendance Date is the last resort.
+const TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
 
 // A start time as minutes since midnight, or null when the cell says nothing.
 function parseTimeOfDay(value) {
