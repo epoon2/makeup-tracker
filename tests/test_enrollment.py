@@ -93,3 +93,28 @@ def test_marker_hours_credit_their_month_and_are_reported():
                         dt.date(2026, 9, 10), dt.date(2026, 9, 1))
     assert month.attended == 3
     assert month.marker_hours == 1
+
+
+def test_audit_flags_the_odd_entries_and_nothing_else():
+    import datetime as dt
+    from reference.audit import audit_month, audit_visits
+    from reference.loaders import Visit
+
+    today = dt.date(2026, 8, 19)
+    clean = Visit("t", dt.date(2026, 8, 4), 1, 8, start_minutes=15 * 60)
+    marker = Visit("t", dt.date(2026, 7, 28), 1, 8, start_minutes=0, marker=True)
+    off = Visit("t", dt.date(2026, 8, 5), 1, 8, start_minutes=11 * 60)
+    late = Visit("t", dt.date(2026, 8, 6), 2, 8, start_minutes=18 * 60)   # ends 8 pm
+    dup_a = Visit("t", dt.date(2026, 8, 7), 1, 8, start_minutes=15 * 60)
+    dup_b = Visit("t", dt.date(2026, 8, 7), 1, 8, start_minutes=15 * 60)
+    future = Visit("t", dt.date(2026, 8, 25), 1, 8, start_minutes=15 * 60)
+
+    kinds = sorted(e.kind for e in audit_visits(
+        [clean, marker, off, late, dup_a, dup_b, future], 1, today))
+    # `late` is both off-hours (ends past 7:30) and a 2-hour entry for a 1-hour student
+    assert kinds == ["duplicate", "folded", "future", "off-hours", "off-hours"]
+
+    assert audit_month("t", "July 2026", 8, 12, 0, False).kind == "heavy-month"
+    assert audit_month("t", "July 2026", 8, 12, 4, False) is None   # markers explain it
+    assert audit_month("t", "July 2026", 8, 10, 0, False) is None   # under the threshold
+    assert audit_month("t", "July 2026", 0, 12, 0, True) is None    # held month
