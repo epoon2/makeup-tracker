@@ -61,6 +61,9 @@ class StudentOverrides:
     not_enrolled: set[str] = field(default_factory=set)
     weekdays: tuple[int, ...] | None = None
     session_hours: int | None = None
+    # 'hours' or 'sessions': what the plan number means for this student, pinned by a
+    # person when the attendance history cannot decide it.
+    plan_reading: str | None = None
     note: str = ""
 
     def held(self, key: str) -> bool:
@@ -105,7 +108,7 @@ class Overrides:
         out: dict = {"version": 1, "students": {}}
         for key, record in self.students.items():
             if not (record.holds or record.plan_hours or record.not_enrolled
-                    or record.weekdays or record.note):
+                    or record.weekdays or record.plan_reading or record.note):
                 continue
             out["students"][key] = {
                 "holds": [{"start": h.start, "until": h.until, "source": h.source} for h in record.holds],
@@ -113,6 +116,7 @@ class Overrides:
                 "notEnrolled": sorted(record.not_enrolled),
                 "weekdays": list(record.weekdays) if record.weekdays else None,
                 "sessionHours": record.session_hours,
+                "planReading": record.plan_reading,
                 "note": record.note,
             }
         return out
@@ -131,5 +135,6 @@ class Overrides:
             weekdays = raw.get("weekdays")
             record.weekdays = tuple(weekdays) if weekdays else None
             record.session_hours = raw.get("sessionHours")
+            record.plan_reading = raw.get("planReading")
             record.note = raw.get("note") or ""
         return result

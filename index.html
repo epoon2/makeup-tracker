@@ -883,7 +883,7 @@ const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return 
 function ovFor(key, create) {
   let rec = overrides.students[key];
   if (!rec && create) {
-    rec = overrides.students[key] = { holds: [], planHours: {}, notEnrolled: [], weekdays: null, sessionHours: null, note: "", answered: [] };
+    rec = overrides.students[key] = { holds: [], planHours: {}, notEnrolled: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [] };
   }
   return rec || null;
 }
@@ -1091,6 +1091,48 @@ function payableWindow(firstN, throughN) {
   return { fromN: Math.max(firstN, mkDate(y, m, day).n), toN: throughN };
 }
 
+// What does the plan number mean for this student: hours, or sessions?
+//
+// Radius plans are sold in "sessions per month", and for one-hour students the two
+// readings are the same number. For two-hour students the centre sometimes leaves the
+// plan at 4 while delivering 4 x 2 = 8 hours a month, and the plan cannot always be
+// changed (it is tied to billing). So the meaning is inferred from what full months
+// actually delivered, and a person can pin it either way from the review queue.
+function resolvePlan(rawPlan, visits, todayY, todayM, pinned) {
+  const raw = rawPlan > 0 ? rawPlan : 8;
+  const real = visits.filter((v) => v.hours > 0 && !v.marker);
+  const out = { hours: raw, raw, sessionHours: 1, reading: "hours", certain: true, source: "plan" };
+  if (!real.length) return out;
+
+  // Typical session length, same rule as schedule inference: mode, tie to shorter.
+  const lengths = new Map();
+  for (const v of real) lengths.set(v.hours, (lengths.get(v.hours) || 0) + 1);
+  const top = Math.max(...lengths.values());
+  const L = Math.min(...[...lengths].filter(([, c]) => c === top).map(([h]) => h));
+  out.sessionHours = L;
+  if (L < 2) return out;
+
+  if (pinned === "hours") return Object.assign(out, { source: "override" });
+  if (pinned === "sessions") return Object.assign(out, { hours: raw * L, reading: "sessions", source: "override" });
+
+  // Evidence: real (non-marker) hours per completed month with any attendance.
+  const totals = new Map();
+  for (const v of real) {
+    if (v.date.y === todayY && v.date.m === todayM) continue;
+    const k = v.date.y + "-" + v.date.m;
+    totals.set(k, (totals.get(k) || 0) + v.hours);
+  }
+  const values = [...totals.values()].sort((a, b) => a - b);
+  if (values.length < 2) return Object.assign(out, { certain: false });
+
+  const mid = values.length >> 1;
+  const typical = values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+  const d1 = Math.abs(typical - raw), d2 = Math.abs(typical - raw * L);
+  if (d2 < d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "inferred" });
+  if (d1 < d2) return out;
+  return Object.assign(out, { certain: false });
+}
+
 function buildReport(attendance, roster, todayN) {
   const { visits, people, warnings } = normalise(attendance, roster);
   if (!visits.length) throw new Error("The attendance export had no usable rows.");
@@ -1116,9 +1158,11 @@ function buildReport(attendance, roster, todayN) {
 
   const students = [];
   for (const [key, list] of grouped) {
-    const plan = (list.find((v) => v.spm) || {}).spm || 8;
+    const rawPlan = (list.find((v) => v.spm) || {}).spm || 8;
     const rec = people.get(key) || null;
     const over = ovFor(key, false);
+    const planInfo = resolvePlan(rawPlan, list, today.y, today.m, over ? over.planReading : null);
+    const plan = planInfo.hours;
 
     if (over && rec && rec.status.toLowerCase() === "enrolled") {
       if (closeHolds(key, monthKey(dataThrough.y, dataThrough.m))) holdsClosed++;
@@ -1143,6 +1187,11 @@ function buildReport(attendance, roster, todayN) {
     const ledger = settle(months);
     const current = months.find((mo) => mo.isCurrent) || null;
     const flags = [];
+    if (planInfo.reading === "sessions") {
+      flags.push("plan " + planInfo.raw + "/month read as " + planInfo.raw + " sessions of " +
+                 planInfo.sessionHours + " hrs = " + plan + " hrs/month" +
+                 (planInfo.source === "override" ? " (set by hand)" : " (from the attendance pattern)"));
+    }
     if (!schedule.confident) flags.push("schedule uncertain: " + schedule.reason);
     if (over && over.note) flags.push("note: " + over.note);
     if (rec && rec.ambiguous) flags.push("more than one roster record under this name");
@@ -1158,7 +1207,7 @@ function buildReport(attendance, roster, todayN) {
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over,
+      plan, planInfo, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over,
       // Held right now, which is what the On hold list means. Driven by the current
       // month rather than roster status, so a hold entered by hand lands on the list.
       onHold: current ? current.onHold : !!(rec && rec.onHold),
@@ -1287,6 +1336,26 @@ function buildQuestions(rep) {
                 ovFor(s.key, true).holds.push({ start: nextKey, until: null, source: "entered" }); } },
             { label: "On hold from " + monthLabel(monthKey(lastMonth.y, lastMonth.m)), apply: () => {
                 ovFor(s.key, true).holds.push({ start: monthKey(lastMonth.y, lastMonth.m), until: null, source: "entered" }); } },
+          ],
+        });
+      }
+    }
+
+    // 2b. A plan number that could mean hours or sessions, with too little history to
+    // tell. Getting this wrong halves or doubles what the student owes, so it is worth
+    // one click to pin down.
+    if (s.planInfo && !s.planInfo.certain && s.planInfo.sessionHours >= 2 && !(s.over && s.over.planReading)) {
+      const id = "plan";
+      if (!wasAnswered(s.key, id)) {
+        const raw = s.planInfo.raw, L = s.planInfo.sessionHours;
+        out.push({
+          key: s.key, id, who: s.display,
+          ask: "Their plan says " + raw + "/month but their sessions run " + L + " hours, and there " +
+               "is not enough history to tell whether " + raw + " means hours or sessions. Which is it?",
+          options: [
+            { label: raw + " hours a month", apply: () => { ovFor(s.key, true).planReading = "hours"; } },
+            { label: raw + " sessions of " + L + " hrs = " + (raw * L) + " hrs a month", apply: () => {
+                ovFor(s.key, true).planReading = "sessions"; } },
           ],
         });
       }
@@ -1463,7 +1532,10 @@ function detailFor(s) {
   rows.push("<dt>Schedule</dt><dd>" + esc(scheduleLabel(s.schedule)) + " &middot; " +
             s.schedule.sessionHours + " hr sessions &middot; " +
             (s.schedule.confident ? '<span class="pill ok">confident</span>' : '<span class="pill warn">' + esc(s.schedule.reason) + "</span>") + "</dd>");
-  rows.push("<dt>Plan</dt><dd>" + s.plan + " hrs/month</dd>");
+  rows.push("<dt>Plan</dt><dd>" + s.plan + " hrs/month" +
+    (s.planInfo && s.planInfo.hours !== s.planInfo.raw
+      ? " <span class=\"pill mute\">plan says " + s.planInfo.raw + ", sessions run " + s.planInfo.sessionHours + " hrs</span>"
+      : "") + "</dd>");
   if (s.rec) rows.push("<dt>Enrollment</dt><dd>" + esc(s.rec.status) +
     (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
 
@@ -1989,6 +2061,24 @@ function selfCheck() {
   is("marker hours count toward the month", withMarker.attended, 9);
   is("marker hours are remembered separately", withMarker.markerHours, 1);
 
+  // --- plan reading: hours vs sessions ------------------------------------------------
+  const twoHourFull = [];
+  for (let mm = 6; mm <= 7; mm++) for (let w = 0; w < 4; w++) twoHourFull.push(visit(2026, mm, 3 + w * 7, 2, 4));
+  is("4/month at 2 hr sessions delivering 8 -> sessions",
+     [resolvePlan(4, twoHourFull, 2026, 8, null).hours, resolvePlan(4, twoHourFull, 2026, 8, null).reading], [8, "sessions"]);
+  const eightPlanTwoHour = twoHourFull.map((v) => Object.assign({}, v, { spm: 8 }));
+  is("8/month at 2 hr sessions delivering 8 -> hours",
+     [resolvePlan(8, eightPlanTwoHour, 2026, 8, null).hours, resolvePlan(8, eightPlanTwoHour, 2026, 8, null).reading], [8, "hours"]);
+  const oneHour = [];
+  for (let w = 0; w < 4; w++) oneHour.push(visit(2026, 7, 6 + w * 7, 1, 8));
+  is("1 hr sessions are never ambiguous", resolvePlan(8, oneHour, 2026, 8, null).certain, true);
+  const thin = [visit(2026, 7, 7, 2, 4)];
+  is("one month of history is uncertain and defaults to hours",
+     [resolvePlan(4, thin, 2026, 8, null).hours, resolvePlan(4, thin, 2026, 8, null).certain], [4, false]);
+  is("a pinned answer wins", resolvePlan(4, thin, 2026, 8, "sessions").hours, 8);
+  const markedOnly = twoHourFull.concat([Object.assign(visit(2026, 6, 20, 4, 4), { marker: true })]);
+  is("markers stay out of the plan evidence", resolvePlan(4, markedOnly, 2026, 8, null).hours, 8);
+
   return { ran, fails };
 }
 
@@ -2154,6 +2244,7 @@ el("answerPicker").addEventListener("change", async () => {
         Object.assign(mine.planHours, rec.planHours || {});
         for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
         if (rec.weekdays) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
+        if (rec.planReading) mine.planReading = rec.planReading;
         if (rec.note) mine.note = rec.note;
         for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
       }
