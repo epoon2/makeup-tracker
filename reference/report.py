@@ -7,6 +7,7 @@ import collections
 import datetime as dt
 from dataclasses import dataclass, field
 
+from .audit import audit_month, audit_visits
 from .loaders import Loaded, RosterRecord
 from .ledger import Settlement, settle
 from .months import UNVERIFIABLE, MonthResult, build_month, month_bounds, months_between
@@ -27,6 +28,7 @@ class StudentReport:
     record: RosterRecord | None
     plan_info: dict = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
+    audit: list = field(default_factory=list)
 
     @property
     def owed(self) -> int:
@@ -252,6 +254,12 @@ def build(loaded: Loaded, today: dt.date | None = None,
                 report.flags.append(
                     f"{month.required} hrs granted for {month.label}; enrollment that month unconfirmed"
                 )
+        report.audit = audit_visits(visits, schedule.session_hours, today)
+        for month in months:
+            entry = audit_month(key, month.label, month.required, month.attended,
+                                month.marker_hours, month.on_hold)
+            if entry:
+                report.audit.append(entry)
         students.append(report)
 
     attended_keys = set(by_student)

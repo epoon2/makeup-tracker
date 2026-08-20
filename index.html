@@ -176,6 +176,10 @@
       </div>
       <div id="queueList"></div>
     </div>
+    <div class="panel" id="auditPanel" hidden>
+      <div><b id="auditTitle"></b> <span class="sub">these are worth a look in Radius; nothing here changes the numbers</span></div>
+      <div id="auditList"></div>
+    </div>
     <div class="cards" id="cards"></div>
     <div class="panel">
       <div class="finder" id="finder">
@@ -1080,6 +1084,67 @@ function settle(months) {
 }
 
 /* ---------------------------------------------------------------------------
+   Attendance audit: entries that look off, for a person to check in Radius.
+
+   Deliberately few checks and conservative thresholds: a list with false alarms
+   in it stops being read, which is worse than no list.
+--------------------------------------------------------------------------- */
+
+// Legitimate sessions run 1:30-7:30 pm. Makeups can sit outside that window, so an
+// off-hours entry is a makeup or a typo - either way worth a look.
+const OPEN_MINUTES = 13 * 60 + 30;
+const CLOSE_MINUTES = 19 * 60 + 30;
+// A month running this many hours past its requirement with no 12 AM markers suggests
+// makeup hours folded into longer entries the old way.
+const EXCESS_WORTH_ASKING = 3;
+
+function fmtMinutes(min) {
+  const hh = Math.floor(min / 60), mm = min % 60;
+  return (hh % 12 || 12) + ":" + String(mm).padStart(2, "0") + " " + (hh < 12 ? "AM" : "PM");
+}
+
+function auditVisits(visits, typicalSessionHours, todayN) {
+  const out = [];
+  const seen = new Map();
+  const sorted = [...visits].sort((a, b) => a.date.n - b.date.n || (a.startMinutes || 0) - (b.startMinutes || 0));
+  for (const v of sorted) {
+    if (v.date.n > todayN) {
+      out.push({ key: v.key, date: v.date, kind: "future",
+                 detail: "dated " + fmt(v.date) + ", which has not happened yet" });
+    }
+    if (!v.marker && v.startMinutes !== null && v.startMinutes !== undefined) {
+      const end = v.startMinutes + v.hours * 60;
+      if (v.startMinutes < OPEN_MINUTES || end > CLOSE_MINUTES) {
+        out.push({ key: v.key, date: v.date, kind: "off-hours",
+                   detail: "starts " + fmtMinutes(v.startMinutes) + ", outside 1:30-7:30 pm and not a 12 AM marker - makeup or typo?" });
+      }
+    }
+    if (!v.marker) {
+      const dk = v.key + "|" + v.date.n + "|" + v.startMinutes + "|" + v.hours;
+      seen.set(dk, (seen.get(dk) || 0) + 1);
+      if (seen.get(dk) === 2) {
+        out.push({ key: v.key, date: v.date, kind: "duplicate",
+                   detail: "two identical entries on the same date and time" });
+      }
+    }
+    if (!v.marker && typicalSessionHours === 1 && v.hours >= 2) {
+      out.push({ key: v.key, date: v.date, kind: "folded",
+                 detail: v.hours + "-hour entry for a student whose sessions run 1 hour - if part of it is a makeup, log that hour as its own 12 AM entry" });
+    }
+  }
+  return out;
+}
+
+function auditMonth(key, label, required, attended, markerHours, onHold) {
+  if (onHold || required <= 0) return null;
+  if (attended >= required + EXCESS_WORTH_ASKING && markerHours === 0) {
+    return { key, date: null, kind: "heavy-month",
+             detail: attended + " hrs in " + label + " against a requirement of " + required + ", with no 12 AM markers - folded makeup hours?" };
+  }
+  return null;
+}
+
+/* ---------------------------------------------------------------------------
    Report assembly
 --------------------------------------------------------------------------- */
 
@@ -1207,13 +1272,18 @@ function buildReport(attendance, roster, todayN) {
         flags.push(mo.required + " hrs granted for " + mo.label + "; enrollment that month unconfirmed");
       }
     }
+    const audit = auditVisits(list, schedule.sessionHours, todayN);
+    for (const mo of months) {
+      const entry = auditMonth(key, mo.label, mo.required, mo.attended, mo.markerHours, mo.onHold);
+      if (entry) audit.push(entry);
+    }
     const onSched = new Set(schedule.weekdays);
     const attendedDates = list
       .map((v) => ({ n: v.date.n, hours: v.hours, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, planInfo, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over,
+      plan, planInfo, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over, audit,
       // Held right now, which is what the On hold list means. Driven by the current
       // month rather than roster status, so a hold entered by hand lands on the list.
       onHold: current ? current.onHold : !!(rec && rec.onHold),
@@ -1420,7 +1490,29 @@ const QUEUE_HEADINGS = {
 
 let queue = [];
 
+function renderAudit() {
+  const entries = [];
+  for (const s of report.students) {
+    for (const a of s.audit) entries.push({ who: s.display, key: s.key, ...a });
+  }
+  if (focusKey) {
+    const mine = entries.filter((e) => e.key === focusKey);
+    entries.length = 0;
+    entries.push(...mine);
+  }
+  entries.sort((a, b) => a.who.localeCompare(b.who) || ((a.date ? a.date.n : 0) - (b.date ? b.date.n : 0)));
+  const panel = el("auditPanel");
+  panel.hidden = !entries.length;
+  if (panel.hidden) { el("auditList").innerHTML = ""; return; }
+  el("auditTitle").textContent = entries.length + " attendance entr" + (entries.length === 1 ? "y" : "ies") + " look odd";
+  el("auditList").innerHTML = entries.slice(0, 40).map((e) =>
+    '<div class="q"><div class="who">' + esc(e.who) + (e.date ? " · " + esc(fmtLong(e.date)) : "") + "</div>" +
+    '<div class="ask">' + esc(e.detail) + "</div></div>"
+  ).join("") + (entries.length > 40 ? '<div class="ask" style="padding-top:10px">Showing 40 of ' + entries.length + ".</div>" : "");
+}
+
 function renderQueue() {
+  renderAudit();
   queue = buildQuestions(report);
   if (focusKey) queue = queue.filter((q) => q.key === focusKey);
   const panel = el("queuePanel");
@@ -2134,6 +2226,26 @@ function selfCheck() {
   is("a pinned answer wins", resolvePlan(4, thin, 2026, 8, "sessions").hours, 8);
   const markedOnly = twoHourFull.concat([Object.assign(visit(2026, 6, 20, 4, 4), { marker: true })]);
   is("markers stay out of the plan evidence", resolvePlan(4, markedOnly, 2026, 8, null).hours, 8);
+
+  // --- the attendance audit ------------------------------------------------------------
+  const av = (y, mth, d, hours, start, marker) =>
+    Object.assign(visit(y, mth, d, hours), { startMinutes: start, marker: !!marker });
+  const oddball = [
+    av(2026, 8, 4, 1, 15 * 60),          // clean
+    av(2026, 7, 28, 1, 0, true),         // marker: never flagged
+    av(2026, 8, 5, 1, 11 * 60),          // starts 11 AM
+    av(2026, 8, 6, 2, 18 * 60),          // ends 8 PM, and 2 hrs for a 1-hr student
+    av(2026, 8, 7, 1, 15 * 60),          // duplicate pair
+    av(2026, 8, 7, 1, 15 * 60),
+    av(2026, 8, 25, 1, 15 * 60),         // future (today is the 19th)
+  ];
+  is("audit finds exactly the odd ones",
+     auditVisits(oddball, 1, D(2026, 8, 19).n).map((e) => e.kind).sort(),
+     ["duplicate", "folded", "future", "off-hours", "off-hours"]);
+  is("a heavy month with no markers is flagged", auditMonth("t", "July 2026", 8, 12, 0, false).kind, "heavy-month");
+  is("markers explain a heavy month", auditMonth("t", "July 2026", 8, 12, 4, false), null);
+  is("a merely busy month is not flagged", auditMonth("t", "July 2026", 8, 10, 0, false), null);
+  is("held months are never heavy", auditMonth("t", "July 2026", 0, 12, 0, true), null);
 
   return { ran, fails };
 }
