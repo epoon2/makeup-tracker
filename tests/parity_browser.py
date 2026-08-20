@@ -35,6 +35,7 @@ async def js():
             const per = {};
             for (const s of rep.students) {
                 per[s.key] = { owed: s.owed, book: s.toSchedule, missed: s.missed.length,
+                               audit: s.audit.map(a=>a.kind).sort().join(","),
                                plan: s.plan, sched: s.schedule.weekdays.join(","),
                                sh: s.schedule.sessionHours, conf: s.schedule.confident,
                                req: s.months.map(x=>x.required).join("/"),
@@ -57,6 +58,7 @@ def py():
     per = {}
     for s in rep.students:
         per[s.key] = { "owed": s.owed, "book": s.to_schedule_now, "missed": len(s.missed_dates),
+                       "audit": ",".join(sorted(a.kind for a in s.audit)),
                        "plan": s.plan_hours, "sched": ",".join(str(w) for w in s.schedule.weekdays),
                        "sh": s.schedule.session_hours, "conf": s.schedule.confident,
                        "req": "/".join(str(m.required) for m in s.months),
