@@ -1,16 +1,18 @@
 import asyncio, pathlib
 from playwright.async_api import async_playwright
 
-DROP = """async () => {
-  const mk = async (u, which) => {
-    const blob = await (await fetch(u)).blob();
-    const f = new File([blob], u.split('/').pop(), {type: blob.type});
-    const dt = new DataTransfer(); dt.items.add(f);
-    const node = which === 'attendance' ? document.getElementById('dropAtt') : document.getElementById('dropStu');
-    node.dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true}));
-  };
-  await mk('testdata/attendance.xlsx','attendance');
-  await mk('testdata/students.xlsx','roster');
+# Bytes, not fetch: the page's CSP sets connect-src 'none', so files must be handed
+# over the way a real user picking a file does.
+import base64
+def _b64(p): return base64.b64encode(pathlib.Path(p).read_bytes()).decode()
+
+DROP = """async (p) => {
+  const toFile = (b64, name) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new File([u], name); };
+  const drop = (id, f) => { const dt = new DataTransfer(); dt.items.add(f);
+    document.getElementById(id).dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true})); };
+  drop('dropAtt', toFile(p.att, 'attendance.xlsx'));
+  drop('dropStu', toFile(p.stu, 'students.xlsx'));
 }"""
 
 async def main():
@@ -24,7 +26,7 @@ async def main():
         print("1. fresh load note:", (await pg.inner_text("#storageNote"))[:70], "...")
         print("   forget button hidden:", await pg.is_hidden("#forget"))
 
-        await pg.evaluate(DROP)
+        await pg.evaluate(DROP, {"att": _b64("testdata/attendance.xlsx"), "stu": _b64("testdata/students.xlsx")})
         await pg.wait_for_function("() => !document.getElementById('run').disabled", timeout=15000)
         await pg.wait_for_function("() => !document.getElementById('forget').hidden", timeout=8000)
         print("2. after drop, forget visible:", not await pg.is_hidden("#forget"))
