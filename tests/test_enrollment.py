@@ -79,3 +79,17 @@ def test_markers_stay_out_of_schedule_inference():
     schedule = infer(visits, 8)
     assert schedule.weekdays == (0, 2)
     assert schedule.session_hours == 1
+
+
+def test_marker_hours_credit_their_month_and_are_reported():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.months import build_month
+    from reference.schedule import Schedule
+
+    visits = [Visit("t", dt.date(2026, 7, 6), 1, 8), Visit("t", dt.date(2026, 7, 8), 1, 8),
+              Visit("t", dt.date(2026, 7, 20), 1, 8, marker=True)]
+    month = build_month(2026, 7, visits, Schedule((0, 2), 1, True, ""), 8, None,
+                        dt.date(2026, 9, 10), dt.date(2026, 9, 1))
+    assert month.attended == 3
+    assert month.marker_hours == 1

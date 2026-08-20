@@ -933,6 +933,10 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
 
   const inMonth = visits.filter((v) => v.date.n >= first && v.date.n <= last);
   const attended = inMonth.reduce((sum, v) => sum + v.hours, 0);
+  // Hours arriving as 12 AM markers are makeup redemptions credited to this month.
+  // They count in `attended` like any hour; this only remembers how many, so the
+  // report can say where a month's total came from.
+  const markerHours = inMonth.reduce((sum, v) => sum + (v.marker ? v.hours : 0), 0);
   // Whole months only. A held month owes nothing, but hours attended during it still pay
   // down earlier debt, because coming in while on hold is how a student burns off what
   // they already owed.
@@ -954,7 +958,7 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   }
 
   const out = {
-    y, m, required, attended, onHold, isCurrent, proratedFrom,
+    y, m, required, attended, markerHours, onHold, isCurrent, proratedFrom,
     label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
     scheduled: [], missed: [], absentWholeMonth: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
     // The review queue and the ledger both ask "how short was this month".
@@ -1467,6 +1471,7 @@ function detailFor(s) {
     const ms = s.schedules[mo.y + "-" + mo.m];
     let line = "<b>" + esc(mo.shortLabel) + "</b>: " + mo.attended + " of " + mo.required + " hrs";
     if (ms && scheduleLabel(ms) !== scheduleLabel(s.schedule)) line += " &middot; schedule " + esc(scheduleLabel(ms));
+    if (mo.markerHours) line += " &middot; " + mo.markerHours + " hr(s) redeemed at 12 AM";
     if (mo.isCurrent) line += " &middot; projected " + mo.projected + (mo.remaining ? " with " + mo.remaining + " left" : "");
     if (mo.proratedFrom) line += " &middot; prorated from " + fmt(mo.proratedFrom);
     if (mo.note) line += '<br><span style="color:var(--muted)">' + esc(mo.note) + "</span>";
@@ -1977,6 +1982,12 @@ function selfCheck() {
   ]);
   is("markers stay out of the schedule", inferSchedule(marked, 8).weekdays, [0, 2]);
   is("markers do not set session length", inferSchedule(marked, 8).sessionHours, 1);
+  // A marker's hours still land in the month it is dated in.
+  const withMarker = buildMonth(2026, 7, weekly.concat([Object.assign(visit(2026, 7, 20, 1), { marker: true })]),
+                                { weekdays: [0, 2], sessionHours: 1, confident: true, reason: "" },
+                                8, null, D(2026, 9, 10).n, D(2026, 9, 1).n, null);
+  is("marker hours count toward the month", withMarker.attended, 9);
+  is("marker hours are remembered separately", withMarker.markerHours, 1);
 
   return { ran, fails };
 }
