@@ -612,6 +612,51 @@ function parseDate(value) {
    Normalisation
 --------------------------------------------------------------------------- */
 
+// Columns that may carry the session's start time. Radius exports vary; the first
+// one present and parseable wins, and a time inside Attendance Date is the fallback.
+const TIME_COLUMNS = ["Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
+
+// A start time as minutes since midnight, or null when the cell says nothing.
+function parseTimeOfDay(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  // Excel can hand a time back as a fraction of a day (0.5 = noon). A bare "0" in a
+  // dedicated time column is taken as midnight; a dateless serial is not a time.
+  if (text === "0") return 0;
+  if (/^0?\.\d+$/.test(text)) {
+    const f = Number(text);
+    return isFinite(f) && f >= 0 && f < 1 ? Math.round(f * 1440) % 1440 : null;
+  }
+  const m = text.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/i);
+  if (!m) return null;
+  let h = +m[1];
+  const min = +m[2];
+  if (min > 59 || h > 23) return null;
+  const ap = m[3] ? m[3].toUpperCase() : null;
+  if (ap === "AM" && h === 12) h = 0;
+  else if (ap === "PM" && h !== 12) h += 12;
+  return h > 23 ? null : h * 60 + min;
+}
+
+// Start time for one attendance row: a dedicated time column first, then a time
+// written after the date inside Attendance Date ("8/5/2026 12:00 AM").
+function startMinutesFor(row) {
+  for (const col of TIME_COLUMNS) {
+    if (col in row) {
+      const t = parseTimeOfDay(row[col]);
+      if (t !== null) return t;
+    }
+  }
+  const text = String(row["Attendance Date"] == null ? "" : row["Attendance Date"]);
+  const after = text.replace(/^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}[,\s]*/, "");
+  if (after && after !== text) {
+    const t = parseTimeOfDay(after);
+    if (t !== null) return t;
+  }
+  return null;
+}
+
 function roundHours(minutes) {
   const v = Number(minutes);
   if (!isFinite(v) || v <= 0) return 0;
@@ -634,21 +679,31 @@ const ACTIVE = new Set(["enrolled", "new", "pre-enrolled"]);
 function normalise(attendance, roster) {
   const warnings = [];
   const visits = [];
-  let unparsed = 0, zero = 0;
+  let unparsed = 0, zero = 0, timed = 0;
   for (const r of attendance.records) {
     const when = parseDate(r["Attendance Date"]);
     if (!when) { unparsed++; continue; }
     const hours = roundHours(r["Duration (Minutes)"]);
     if (hours <= 0) { zero++; continue; }
+    // 12:00 AM is never a real session (real ones run 1:30-7:30 pm). By convention an
+    // entry logged at exactly midnight is a makeup-redemption marker: its hours credit
+    // the month it is dated in, but it is not evidence of a weekly schedule.
+    const startMinutes = startMinutesFor(r);
+    if (startMinutes !== null) timed++;
     visits.push({
       key: nameKey(r["First Name"], r["Last Name"]),
       date: when,
       hours,
       spm: parseInt(r["Sessions Per Month"], 10) || 0,
+      startMinutes,
+      marker: startMinutes === 0,
     });
   }
   if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
   if (zero) warnings.push(zero + " attendance rows rounded to 0 hours and were ignored");
+  if (visits.length && !timed) {
+    warnings.push("the attendance export carries no session start times, so 12 AM makeup-redemption markers cannot be recognised");
+  }
 
   const people = new Map();
   const clash = new Set();
@@ -1899,6 +1954,18 @@ function selfCheck() {
   is("today is never missed", mo.missed.includes(D(2026, 8, 19).n), false);
   // The stopped-early review question reads month.shortfall; it must exist.
   is("month exposes its shortfall", mo.shortfall, mo.required - mo.attended);
+
+  // --- start times and 12 AM makeup markers ------------------------------------------
+  is("parse '12:00 AM'", parseTimeOfDay("12:00 AM"), 0);
+  is("parse '12:30 AM'", parseTimeOfDay("12:30 AM"), 30);
+  is("parse '1:30 PM'", parseTimeOfDay("1:30 PM"), 810);
+  is("parse '13:30'", parseTimeOfDay("13:30"), 810);
+  is("parse '12:00 PM' is noon", parseTimeOfDay("12:00 PM"), 720);
+  is("parse blank time", parseTimeOfDay(""), null);
+  is("parse day fraction", parseTimeOfDay("0.5"), 720);
+  is("time inside Attendance Date", startMinutesFor({ "Attendance Date": "8/5/2026 12:00 AM" }), 0);
+  is("dedicated column wins", startMinutesFor({ "Start Time": "3:00 PM", "Attendance Date": "8/5/2026 12:00 AM" }), 900);
+  is("dateless row has no time", startMinutesFor({ "Attendance Date": "8/5/2026" }), null);
 
   return { ran, fails };
 }
