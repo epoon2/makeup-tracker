@@ -70,7 +70,10 @@ It is not decoration. Six deliberate rule breakages were introduced to test it, 
 caught all six: rounding changed to floor, grace widened to three months, hold end made
 inclusive, weekday off by one, schedule days uncapped, data horizon ignored.
 
-**Then check the numbers against `BASELINE.md`** using the 8/18 exports.
+**Then check the numbers against `BASELINE.md`** using the 8/18 exports. Note: the
+20 Aug 2026 changes (markers, plan reading, current-month settlement) can legitimately
+shift baseline numbers; regenerate `BASELINE.md` on the next run against real exports
+and record what moved and why.
 
 **If you have Python available**, the deeper checks are:
 
@@ -168,6 +171,27 @@ suggest re-exporting from further back.
 
 **"Enrolled, never attended" means `Enrollment Status = Enrolled` only.** New and
 Pre-Enrolled were tried and produced mostly false alarms.
+
+**A 12:00 AM entry is a makeup-redemption marker** (confirmed by Jorge 20 Aug 2026: real
+sessions run only 1:30–7:30 pm, and 12 AM is never legitimate). Marker hours credit the
+month they are dated in but are excluded from schedule inference and from plan-reading
+evidence. The centre's logging convention is one logged hour = one delivered hour: a
+makeup attached to a regular session is logged as two entries, the regular hour at its
+real time plus a 1-hour 12 AM marker dated to the month being credited, ideally on the
+exact missed date. If the export carries no start times at all, the tool says so in a
+warning and markers simply cannot be recognised.
+
+**A plan number can mean hours or sessions** (Jorge, 20 Aug 2026: the 4/month students
+with 2-hour sessions cannot be moved to 8/month in Radius, so the tool must infer).
+`resolvePlan`/`resolve_plan` compares both readings against the median of completed-month
+real hours, needs at least two months of evidence to decide, defaults to hours when
+uncertain, asks in the review queue, and honours a pinned `planReading` override.
+
+**Hours already attended in the current month pay old debt immediately** — actual hours,
+never the projection, and the current month still never opens a debt of its own.
+
+**Makeups are never honored beyond the two-month grace** (confirmed by Jorge 20 Aug 2026).
+The grace dial stays at 2.
 
 ---
 
