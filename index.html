@@ -877,6 +877,7 @@ function resolveAbsence(rec, visitDays, first, last) {
 let overrides = { version: 1, students: {} };
 
 const monthKey = (y, m) => y + "-" + String(m).padStart(2, "0");
+const monthKeyAfter = (mk) => { const [y, m] = mk.split("-").map(Number); return m === 12 ? monthKey(y + 1, 1) : monthKey(y, m + 1); };
 const mkIndex = (key) => { const [y, m] = key.split("-").map(Number); return y * 12 + m - 1; };
 const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return MON_ABBR[m - 1] + " " + y; };
 
@@ -1309,8 +1310,9 @@ function buildQuestions(rep) {
                ? " On hold also covers every month after this one until an export shows them enrolled again; not enrolled applies to " + mo.label + " on its own."
                : ""),
         options: [
-          { label: "On hold from " + monthLabel(mk), suggest: likelyHold, apply: () => {
+          { label: "On hold from " + monthLabel(mk) + " (still on hold)", apply: () => {
               ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
+          { label: "On hold — enter the months", suggest: likelyHold, monthsPicker: true, defaultFrom: mk, defaultTo: mk },
           { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
         ].concat(offerNotEnrolled
           ? [{ label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
@@ -1337,8 +1339,8 @@ function buildQuestions(rep) {
             { label: "Away — still owes " + lastMonth.shortfall + " hrs", suggest: true, apply: () => {} },
             { label: "On hold from " + monthLabel(nextKey), apply: () => {
                 ovFor(s.key, true).holds.push({ start: nextKey, until: null, source: "entered" }); } },
-            { label: "On hold from " + monthLabel(monthKey(lastMonth.y, lastMonth.m)), apply: () => {
-                ovFor(s.key, true).holds.push({ start: monthKey(lastMonth.y, lastMonth.m), until: null, source: "entered" }); } },
+            { label: "On hold — enter the months", monthsPicker: true,
+              defaultFrom: monthKey(lastMonth.y, lastMonth.m), defaultTo: monthKey(lastMonth.y, lastMonth.m) },
           ],
         });
       }
@@ -1438,6 +1440,18 @@ function renderQueue() {
       ? '<div class="days" id="picker' + i + '" hidden>' +
           WEEKDAYS.map((w, d) => '<label><input type="checkbox" value="' + d + '">' + w + "</label>").join("") +
           ' <button data-save="' + i + '">Save days</button></div>'
+      : "") +
+    (q.options.some((o) => o.monthsPicker)
+      ? (() => {
+          const def = q.options.find((o) => o.monthsPicker);
+          const opts = (sel) => report.span.map(([y, m]) =>
+            '<option value="' + monthKey(y, m) + '"' + (monthKey(y, m) === sel ? " selected" : "") + '>' +
+            monthLabel(monthKey(y, m)) + "</option>").join("");
+          return '<div class="days" id="mpicker' + i + '" hidden>' +
+            'from <select data-mfrom="' + i + '">' + opts(def.defaultFrom) + "</select> " +
+            'through <select data-mto="' + i + '">' + opts(def.defaultTo) + "</select> " +
+            '<button data-msave="' + i + '">Save hold</button></div>';
+        })()
       : "") + "</div>"
   ).join("") + (queue.length > 40 ? '<div class="ask" style="padding-top:10px">Showing 40 of ' + queue.length + '. Answer these and the next batch appears.</div>' : "");
 
@@ -1448,9 +1462,23 @@ function renderQueue() {
       else {
         const opt = q.options[+b.dataset.o];
         if (opt.picker) { const p = el("picker" + b.dataset.q); p.hidden = !p.hidden; return; }
+        if (opt.monthsPicker) { const p = el("mpicker" + b.dataset.q); p.hidden = !p.hidden; return; }
         opt.apply();
         markAnswered(q.key, q.id);
       }
+      await saveOverrides();
+      rerun();
+    };
+  });
+  list.querySelectorAll("button[data-msave]").forEach((b) => {
+    b.onclick = async () => {
+      const i = +b.dataset.msave, q = queue[i];
+      const from = list.querySelector('select[data-mfrom="' + i + '"]').value;
+      const to = list.querySelector('select[data-mto="' + i + '"]').value;
+      if (mkIndex(to) < mkIndex(from)) { say("The hold cannot end before it starts.", "error"); return; }
+      // `until` is exclusive, so a hold through August ends at September.
+      ovFor(q.key, true).holds.push({ start: from, until: monthKeyAfter(to), source: "entered" });
+      markAnswered(q.key, q.id);
       await saveOverrides();
       rerun();
     };
