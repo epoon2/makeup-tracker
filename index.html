@@ -900,6 +900,10 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
     y, m, required, attended, onHold, isCurrent, proratedFrom,
     label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
     scheduled: [], missed: [], absentWholeMonth: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
+    // The review queue and the ledger both ask "how short was this month".
+    // Computed on read so the hold/not-enrolled branches, which zero out
+    // `required` after this literal is built, stay consistent with it.
+    get shortfall() { return Math.max(0, this.required - this.attended); },
   };
 
   // The horizon is the last date we can honestly call missed: never today, because
@@ -1893,6 +1897,8 @@ function selfCheck() {
   is("nothing past the export date is missed",
      mo.missed.every((n) => n <= D(2026, 8, 17).n), true);
   is("today is never missed", mo.missed.includes(D(2026, 8, 19).n), false);
+  // The stopped-early review question reads month.shortfall; it must exist.
+  is("month exposes its shortfall", mo.shortfall, mo.required - mo.attended);
 
   return { ran, fails };
 }
