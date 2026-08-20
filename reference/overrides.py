@@ -64,6 +64,15 @@ class StudentOverrides:
     # 'hours' or 'sessions': what the plan number means for this student, pinned by a
     # person when the attendance history cannot decide it.
     plan_reading: str | None = None
+    # Exact hold periods typed off the Radius hold screen, as ISO date strings.
+    # Month-aligned periods are stored as month holds instead; these carry the
+    # rare hold that starts or ends mid-month, and prorate that month.
+    hold_dates: list[dict] = field(default_factory=list)
+    # Net hour corrections per month key, from answered audit findings: a
+    # double-logged hour removed, or a folded makeup hour moved to the month
+    # it belongs to. Always small, always person-approved.
+    hour_adjust: dict[str, int] = field(default_factory=dict)
+    audit_checked: list[str] = field(default_factory=list)
     note: str = ""
 
     def held(self, key: str) -> bool:
@@ -108,7 +117,8 @@ class Overrides:
         out: dict = {"version": 1, "students": {}}
         for key, record in self.students.items():
             if not (record.holds or record.plan_hours or record.not_enrolled
-                    or record.weekdays or record.plan_reading or record.note):
+                    or record.weekdays or record.plan_reading or record.hold_dates
+                    or record.hour_adjust or record.audit_checked or record.note):
                 continue
             out["students"][key] = {
                 "holds": [{"start": h.start, "until": h.until, "source": h.source} for h in record.holds],
@@ -117,6 +127,9 @@ class Overrides:
                 "weekdays": list(record.weekdays) if record.weekdays else None,
                 "sessionHours": record.session_hours,
                 "planReading": record.plan_reading,
+                "holdDates": record.hold_dates,
+                "hourAdjust": record.hour_adjust,
+                "auditChecked": record.audit_checked,
                 "note": record.note,
             }
         return out
@@ -136,5 +149,8 @@ class Overrides:
             record.weekdays = tuple(weekdays) if weekdays else None
             record.session_hours = raw.get("sessionHours")
             record.plan_reading = raw.get("planReading")
+            record.hold_dates = list(raw.get("holdDates") or [])
+            record.hour_adjust = {k: int(v) for k, v in (raw.get("hourAdjust") or {}).items()}
+            record.audit_checked = list(raw.get("auditChecked") or [])
             record.note = raw.get("note") or ""
         return result

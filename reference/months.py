@@ -94,6 +94,8 @@ def build_month(
     on_hold: bool | None = None,
     plan_override: int | None = None,
     force_not_enrolled: bool = False,
+    hold_ranges: list[tuple[dt.date, dt.date]] = (),
+    hour_adjust: int = 0,
 ) -> MonthResult:
     first, last = month_bounds(year, month)
     is_current = (year, month) == (today.year, today.month)
@@ -102,7 +104,9 @@ def build_month(
         plan_hours = plan_override
 
     in_month = [v for v in visits if first <= v.date <= last]
-    attended = sum(v.hours for v in in_month)
+    # Person-approved corrections from answered audit findings land here, so a
+    # double-logged hour comes out and a moved makeup hour lands in its month.
+    attended = max(0, sum(v.hours for v in in_month) + hour_adjust)
     # Hours arriving as 12 AM markers are makeup redemptions credited to this month.
     # They count in `attended` like any hour; this only remembers how many, so the
     # report can say where a month's total came from.
@@ -149,6 +153,38 @@ def build_month(
         horizon = min(horizon, data_through)
     result.scheduled_dates = scheduled_dates(schedule, max(first, active_from), min(last, active_to))
     result.missed_dates = [d for d in result.scheduled_dates if d <= horizon and d not in attended_days]
+
+    # Exact hold periods (typed off the Radius hold screen). A period covering
+    # every scheduled day of the month behaves as a whole-month hold; a partial
+    # one waives the scheduled sessions it covers and prorates the requirement,
+    # the same way enrollment dates prorate. Held dates are never "missed".
+    def _in_hold(day: dt.date) -> bool:
+        return any(a <= day <= b for a, b in hold_ranges)
+
+    if hold_ranges and not on_hold and not force_not_enrolled:
+        if result.scheduled_dates:
+            held = [d for d in result.scheduled_dates if _in_hold(d)]
+            if held and len(held) == len(result.scheduled_dates):
+                on_hold = True
+            elif held:
+                kept = len(result.scheduled_dates) - len(held)
+                result.required = max(0, math.floor(result.required * kept / len(result.scheduled_dates) + 0.5))
+                # Waived dates are not expected sessions: they leave the
+                # schedule entirely, so they are neither missed nor projected.
+                result.scheduled_dates = [d for d in result.scheduled_dates if not _in_hold(d)]
+                result.missed_dates = [d for d in result.missed_dates if not _in_hold(d)]
+                result.note = (f"hold waived {len(held)} scheduled session(s) this month; "
+                               f"requirement reduced to {result.required}")
+        else:
+            window = [max(first, active_from) + dt.timedelta(days=i)
+                      for i in range((min(last, active_to) - max(first, active_from)).days + 1)]
+            held_days = sum(1 for d in window if _in_hold(d))
+            if window and held_days >= len(window):
+                on_hold = True
+            elif window and held_days:
+                result.required = max(0, math.floor(result.required * (len(window) - held_days) / len(window) + 0.5))
+                result.note = f"hold covered {held_days} day(s); requirement reduced to {result.required}"
+        result.on_hold = on_hold
 
     if on_hold:
         result.required = 0

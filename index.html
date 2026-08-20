@@ -885,13 +885,27 @@ let overrides = { version: 1, students: {} };
 
 const monthKey = (y, m) => y + "-" + String(m).padStart(2, "0");
 const monthKeyAfter = (mk) => { const [y, m] = mk.split("-").map(Number); return m === 12 ? monthKey(y + 1, 1) : monthKey(y, m + 1); };
+
+// Classify a typed hold period. Month-aligned dates (the 1st through a last
+// day of a month, which is how Radius holds almost always run) become a clean
+// whole-month hold; anything else is kept as an exact date period and
+// prorates the partly-held months.
+function holdEntryFromDates(from, to) {
+  if (!from || !to || from.n > to.n) return null;
+  const aligned = from.d === 1 && to.d === lastDayOf(to.y, to.m);
+  if (aligned) {
+    return { kind: "months", start: monthKey(from.y, from.m), until: monthKeyAfter(monthKey(to.y, to.m)) };
+  }
+  const iso = (t) => t.y + "-" + String(t.m).padStart(2, "0") + "-" + String(t.d).padStart(2, "0");
+  return { kind: "dates", from: iso(from), to: iso(to) };
+}
 const mkIndex = (key) => { const [y, m] = key.split("-").map(Number); return y * 12 + m - 1; };
 const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return MON_ABBR[m - 1] + " " + y; };
 
 function ovFor(key, create) {
   let rec = overrides.students[key];
   if (!rec && create) {
-    rec = overrides.students[key] = { holds: [], planHours: {}, notEnrolled: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [] };
+    rec = overrides.students[key] = { holds: [], holdDates: [], planHours: {}, hourAdjust: {}, notEnrolled: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [], auditChecked: [] };
   }
   return rec || null;
 }
@@ -930,7 +944,7 @@ async function saveOverrides() {
    Per-month accounting
 --------------------------------------------------------------------------- */
 
-function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN, over) {
+function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN, over, holdRanges, hourAdjust) {
   const first = mkDate(y, m, 1).n;
   const last = mkDate(y, m, lastDayOf(y, m)).n;
   const today = fromDayNumber(todayN);
@@ -940,7 +954,9 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   if (over && over.planHours[mk] != null) planHours = over.planHours[mk];
 
   const inMonth = visits.filter((v) => v.date.n >= first && v.date.n <= last);
-  const attended = inMonth.reduce((sum, v) => sum + v.hours, 0);
+  // Person-approved corrections from answered audit findings land here, so a
+  // double-logged hour comes out and a moved makeup hour lands in its month.
+  const attended = Math.max(0, inMonth.reduce((sum, v) => sum + v.hours, 0) + (hourAdjust || 0));
   // Hours arriving as 12 AM markers are makeup redemptions credited to this month.
   // They count in `attended` like any hour; this only remembers how many, so the
   // report can say where a month's total came from.
@@ -948,7 +964,7 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   // Whole months only. A held month owes nothing, but hours attended during it still pay
   // down earlier debt, because coming in while on hold is how a student burns off what
   // they already owed.
-  const onHold = over ? isHeld(over, mk) : !!(rec && rec.onHold);
+  let onHold = over ? isHeld(over, mk) : !!(rec && rec.onHold);
   const forcedNotEnrolled = !!(over && over.notEnrolled.includes(mk));
 
   let activeFrom = first, activeTo = last;
@@ -983,6 +999,40 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   const attendedDays = new Set(inMonth.map((v) => v.date.n));
   out.scheduled = scheduledDates(schedule, Math.max(first, activeFrom), Math.min(last, activeTo));
   out.missed = out.scheduled.filter((n) => n <= horizon && !attendedDays.has(n));
+
+  // Exact hold periods (typed off the Radius hold screen). A period covering
+  // every scheduled day of the month behaves as a whole-month hold; a partial
+  // one waives the scheduled sessions it covers and prorates the requirement,
+  // the same way enrollment dates prorate. Held dates are never "missed".
+  const inHold = (n) => (holdRanges || []).some((r) => n >= r.fromN && n <= r.toN);
+  if (holdRanges && holdRanges.length && !onHold && !forcedNotEnrolled) {
+    if (out.scheduled.length) {
+      const held = out.scheduled.filter(inHold);
+      if (held.length && held.length === out.scheduled.length) {
+        onHold = true;
+        out.onHold = true;
+      } else if (held.length) {
+        const kept = out.scheduled.length - held.length;
+        out.required = Math.max(0, Math.floor((out.required * kept) / out.scheduled.length + 0.5));
+        // Waived dates are not expected sessions: they leave the schedule
+        // entirely, so they are neither missed nor projected.
+        out.scheduled = out.scheduled.filter((n) => !inHold(n));
+        out.missed = out.missed.filter((n) => !inHold(n));
+        out.note = "hold waived " + held.length + " scheduled session(s) this month; requirement reduced to " + out.required;
+      }
+    } else {
+      const from = Math.max(first, activeFrom), to = Math.min(last, activeTo);
+      let heldDays = 0, windowDays = 0;
+      for (let n = from; n <= to; n++) { windowDays++; if (inHold(n)) heldDays++; }
+      if (windowDays && heldDays >= windowDays) {
+        onHold = true;
+        out.onHold = true;
+      } else if (windowDays && heldDays) {
+        out.required = Math.max(0, Math.floor((out.required * (windowDays - heldDays)) / windowDays + 0.5));
+        out.note = "hold covered " + heldDays + " day(s); requirement reduced to " + out.required;
+      }
+    }
+  }
 
   if (onHold) {
     out.required = 0;
@@ -1245,6 +1295,13 @@ function buildReport(attendance, roster, todayN) {
       if (closeHolds(key, monthKey(dataThrough.y, dataThrough.m))) holdsClosed++;
     }
 
+    // Exact hold periods, parsed once per student
+    const holdRanges = [];
+    for (const period of (over && over.holdDates) || []) {
+      const a = parseDate(period.from), b = parseDate(period.to);
+      if (a && b && a.n <= b.n) holdRanges.push({ fromN: a.n, toN: b.n });
+    }
+
     const schedules = {};
     const months = span.map(([y, m]) => {
       const firstN = mkDate(y, m, 1).n;
@@ -1256,7 +1313,8 @@ function buildReport(attendance, roster, todayN) {
               confident: true, reason: "set by hand" };
       }
       schedules[y + "-" + m] = s;
-      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN, over);
+      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN, over, holdRanges,
+                        over && over.hourAdjust ? over.hourAdjust[monthKey(y, m)] || 0 : 0);
     });
     // The student-level schedule is the one that applied most recently, since that is what
     // someone reading the row wants. Earlier months keep their own.
@@ -2263,6 +2321,28 @@ function selfCheck() {
   is("a merely busy month is not flagged", auditMonth("t", "July 2026", 8, 10, 0, false), null);
   is("held months are never heavy", auditMonth("t", "July 2026", 0, 12, 0, true), null);
 
+  // --- exact hold dates -----------------------------------------------------------------
+  is("month-aligned dates become a month hold",
+     holdEntryFromDates(D(2026, 6, 1), D(2026, 8, 31)),
+     { kind: "months", start: "2026-06", until: "2026-09" });
+  is("mid-month dates stay a date period",
+     holdEntryFromDates(D(2026, 7, 3), D(2026, 7, 18)),
+     { kind: "dates", from: "2026-07-03", to: "2026-07-18" });
+  is("backwards dates are rejected", holdEntryFromDates(D(2026, 8, 2), D(2026, 8, 1)), null);
+  const monWed = { weekdays: [0, 2], sessionHours: 1, confident: true, reason: "" };
+  const julVisits = [visit(2026, 7, 20, 1), visit(2026, 7, 22, 1), visit(2026, 7, 27, 1), visit(2026, 7, 29, 1)];
+  const partial = buildMonth(2026, 7, julVisits, monWed, 8, null, D(2026, 9, 10).n, D(2026, 9, 1).n, null,
+                             [{ fromN: D(2026, 7, 1).n, toN: D(2026, 7, 15).n }], 0);
+  is("a partial hold prorates the requirement", partial.required, 4);
+  is("held dates are not missed", partial.missed.every((n) => n > D(2026, 7, 15).n), true);
+  const covered = buildMonth(2026, 7, [], monWed, 8, null, D(2026, 9, 10).n, D(2026, 9, 1).n, null,
+                             [{ fromN: D(2026, 7, 1).n, toN: D(2026, 7, 31).n }], 0);
+  is("a hold covering every scheduled day acts as a month hold", [covered.onHold, covered.required], [true, 0]);
+  const adjDown = buildMonth(2026, 7, [visit(2026, 7, 6, 2)], monWed, 8, null, D(2026, 9, 10).n, D(2026, 9, 1).n, null, [], -1);
+  is("a negative adjustment removes an answered hour", adjDown.attended, 1);
+  const adjUp = buildMonth(2026, 6, [], monWed, 8, null, D(2026, 9, 10).n, D(2026, 9, 1).n, null, [], 1);
+  is("a positive adjustment lands a moved hour", adjUp.attended, 1);
+
   return { ran, fails };
 }
 
@@ -2429,6 +2509,12 @@ el("answerPicker").addEventListener("change", async () => {
         for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
         if (rec.weekdays) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
         if (rec.planReading) mine.planReading = rec.planReading;
+        mine.holdDates = mine.holdDates || [];
+        const seenDates = new Set(mine.holdDates.map((h) => h.from + ">" + h.to));
+        for (const h of rec.holdDates || []) if (!seenDates.has(h.from + ">" + h.to)) mine.holdDates.push(h);
+        mine.hourAdjust = Object.assign({}, rec.hourAdjust || {}, mine.hourAdjust || {});
+        mine.auditChecked = mine.auditChecked || [];
+        for (const a of rec.auditChecked || []) if (!mine.auditChecked.includes(a)) mine.auditChecked.push(a);
         if (rec.note) mine.note = rec.note;
         for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
       }

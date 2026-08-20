@@ -133,3 +133,64 @@ def test_plan_reading_round_trips_through_serialisation():
     o.get("k").plan_reading = "sessions"
     again = Overrides.from_dict(o.to_dict())
     assert again.get("k").plan_reading == "sessions"
+
+
+def test_date_holds_prorate_a_partly_held_month():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.months import build_month
+    from reference.schedule import Schedule
+
+    # Mon/Wed student, 8 hrs plan; hold covers 7/1-7/15 (4 of 9 scheduled days)
+    sched = Schedule((0, 2), 1, True, "")
+    visits = [Visit("t", dt.date(2026, 7, 20), 1, 8), Visit("t", dt.date(2026, 7, 22), 1, 8),
+              Visit("t", dt.date(2026, 7, 27), 1, 8), Visit("t", dt.date(2026, 7, 29), 1, 8)]
+    month = build_month(2026, 7, visits, sched, 8, None, dt.date(2026, 9, 10), dt.date(2026, 9, 1),
+                        hold_ranges=[(dt.date(2026, 7, 1), dt.date(2026, 7, 15))])
+    # 9 scheduled Mon/Wed in July; 5 kept -> round(8 * 5/9) = 4
+    assert month.required == 4
+    assert month.attended == 4
+    assert month.shortfall == 0
+    assert all(d > dt.date(2026, 7, 15) for d in month.missed_dates)
+
+
+def test_date_holds_covering_every_scheduled_day_act_as_a_month_hold():
+    import datetime as dt
+    from reference.months import build_month
+    from reference.schedule import Schedule
+
+    month = build_month(2026, 7, [], Schedule((0, 2), 1, True, ""), 8, None,
+                        dt.date(2026, 9, 10), dt.date(2026, 9, 1),
+                        hold_ranges=[(dt.date(2026, 7, 1), dt.date(2026, 7, 31))])
+    assert month.on_hold is True
+    assert month.required == 0
+
+
+def test_hour_adjust_moves_answered_hours():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.months import build_month
+    from reference.schedule import Schedule
+
+    sched = Schedule((0, 2), 1, True, "")
+    visits = [Visit("t", dt.date(2026, 7, 6), 2, 8)]
+    down = build_month(2026, 7, visits, sched, 8, None, dt.date(2026, 9, 10), dt.date(2026, 9, 1),
+                       hour_adjust=-1)
+    assert down.attended == 1
+    up = build_month(2026, 6, [], sched, 8, None, dt.date(2026, 9, 10), dt.date(2026, 9, 1),
+                     hour_adjust=1)
+    assert up.attended == 1
+
+
+def test_new_override_fields_round_trip():
+    from reference.overrides import Overrides
+
+    o = Overrides()
+    rec = o.get("k")
+    rec.hold_dates.append({"from": "2026-07-03", "to": "2026-07-18"})
+    rec.hour_adjust["2026-08"] = -1
+    rec.audit_checked.append("folded|20260805|0")
+    again = Overrides.from_dict(o.to_dict())
+    assert again.get("k").hold_dates == [{"from": "2026-07-03", "to": "2026-07-18"}]
+    assert again.get("k").hour_adjust == {"2026-08": -1}
+    assert again.get("k").audit_checked == ["folded|20260805|0"]
