@@ -35,6 +35,10 @@ ROSTER_COLUMNS = [
     "Center",
 ]
 
+# Columns that may carry the session's start time. Radius exports vary; the first one
+# present and parseable wins, and a time inside Attendance Date is the fallback.
+TIME_COLUMNS = ["Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"]
+
 # 'Recurring' appears in Enrollment End Date to mean "no end date", not a date.
 NO_END_SENTINEL = {"recurring", "", "none", "n/a"}
 
@@ -61,6 +65,56 @@ def _parse_date(value) -> dt.date | None:
         return dt.date(year, month, day)
     except ValueError:
         return None
+
+
+def parse_time_of_day(value) -> int | None:
+    """A start time as minutes since midnight, or None when the cell says nothing.
+
+    Excel can hand a time back as a fraction of a day (0.5 = noon). A bare '0' in a
+    dedicated time column is taken as midnight; a dateless serial is not a time.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text == "0":
+        return 0
+    if re.match(r"^0?\.\d+$", text):
+        try:
+            f = float(text)
+        except ValueError:
+            return None
+        return round(f * 1440) % 1440 if 0 <= f < 1 else None
+    match = re.search(r"(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?", text, re.IGNORECASE)
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if minute > 59 or hour > 23:
+        return None
+    ampm = (match.group(3) or "").upper()
+    if ampm == "AM" and hour == 12:
+        hour = 0
+    elif ampm == "PM" and hour != 12:
+        hour += 12
+    return None if hour > 23 else hour * 60 + minute
+
+
+def start_minutes_for(row: dict) -> int | None:
+    """Start time for one attendance row: a dedicated time column first, then a time
+    written after the date inside Attendance Date ('8/5/2026 12:00 AM')."""
+    for col in TIME_COLUMNS:
+        if col in row:
+            t = parse_time_of_day(row[col])
+            if t is not None:
+                return t
+    text = "" if row.get("Attendance Date") is None else str(row.get("Attendance Date"))
+    after = re.sub(r"^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}[,\s]*", "", text)
+    if after and after != text:
+        t = parse_time_of_day(after)
+        if t is not None:
+            return t
+    return None
 
 
 def round_hours(minutes) -> int:
@@ -99,6 +153,11 @@ class Visit:
     date: dt.date
     hours: int
     sessions_per_month: int
+    start_minutes: int | None = None
+    # 12:00 AM is never a real session (real ones run 1:30-7:30 pm). By convention an
+    # entry logged at exactly midnight is a makeup-redemption marker: its hours credit
+    # the month it is dated in, but it is not evidence of a weekly schedule.
+    marker: bool = False
 
 
 @dataclass
@@ -139,7 +198,7 @@ class Loaded:
     warnings: list[str] = field(default_factory=list)
 
 
-def _read(path, columns) -> pd.DataFrame:
+def _read(path, columns, optional=()) -> pd.DataFrame:
     frame = pd.read_excel(path, dtype=str)
     frame.columns = [str(c).strip() for c in frame.columns]
     missing = [c for c in columns if c not in frame.columns]
@@ -147,16 +206,18 @@ def _read(path, columns) -> pd.DataFrame:
         raise ValueError(f"{path}: missing expected columns {missing}")
     # Deduplicate labels before selecting; the roster export ships two 'Lead Id' columns.
     frame = frame.loc[:, ~frame.columns.duplicated()]
-    return frame[[c for c in columns if c in frame.columns]]
+    wanted = [c for c in columns if c in frame.columns] + [c for c in optional if c in frame.columns]
+    return frame[wanted]
 
 
 def load(attendance_path, roster_path) -> Loaded:
     warnings: list[str] = []
 
-    att = _read(attendance_path, ATTENDANCE_COLUMNS)
+    att = _read(attendance_path, ATTENDANCE_COLUMNS, optional=TIME_COLUMNS)
     visits: list[Visit] = []
     unparsed_dates = 0
     zero_hour = 0
+    timed = 0
     for record in att.to_dict("records"):
         when = _parse_date(record.get("Attendance Date"))
         if when is None:
@@ -170,18 +231,28 @@ def load(attendance_path, roster_path) -> Loaded:
             spm = int(float(str(record.get("Sessions Per Month") or 0)))
         except (TypeError, ValueError):
             spm = 0
+        start_minutes = start_minutes_for(record)
+        if start_minutes is not None:
+            timed += 1
         visits.append(
             Visit(
                 key=name_key(record.get("First Name"), record.get("Last Name")),
                 date=when,
                 hours=hours,
                 sessions_per_month=spm,
+                start_minutes=start_minutes,
+                marker=start_minutes == 0,
             )
         )
     if unparsed_dates:
         warnings.append(f"{unparsed_dates} attendance rows had an unreadable date and were skipped")
     if zero_hour:
         warnings.append(f"{zero_hour} attendance rows rounded to 0 hours and were ignored")
+    if visits and not timed:
+        warnings.append(
+            "the attendance export carries no session start times, so 12 AM "
+            "makeup-redemption markers cannot be recognised"
+        )
 
     ros = _read(roster_path, ROSTER_COLUMNS)
     roster: dict[str, RosterRecord] = {}
