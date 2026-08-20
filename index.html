@@ -1044,10 +1044,10 @@ function settle(months) {
         expired += debt.outstanding;
       }
     }
-    if (month.isCurrent) continue;
-
     // A held month requires nothing, so everything attended in it is excess and pays down
-    // earlier debt. That is the point of coming in while on hold.
+    // earlier debt. That is the point of coming in while on hold. The current month pays
+    // too, from hours already sat (never from the projection): a makeup redeemed today
+    // should clear the old debt today, not at the end of the month.
     let excess = Math.max(0, month.attended - month.required);
     if (excess) {
       for (const debt of debts) {
@@ -1060,6 +1060,9 @@ function settle(months) {
       }
       unused += excess;
     }
+    // The current month never opens a debt: its gap is a projection, reported as
+    // makeups to schedule rather than as hours already owed.
+    if (month.isCurrent) continue;
     const shortfall = Math.max(0, month.required - month.attended);
     if (shortfall && !month.onHold) {
       debts.push({
@@ -1984,6 +1987,10 @@ function selfCheck() {
   const bank = settle([M(2026, 5, 8, 12), M(2026, 6, 8, 4)]);
   is("excess does not bank forward", [bank.owed, bank.unused], [4, 4]);
   is("current month opens no debt", settle([M(2026, 8, 8, 2, { isCurrent: true })]).owed, 0);
+  is("hours already sat this month pay old debt at once",
+     settle([M(2026, 7, 8, 4), M(2026, 8, 8, 12, { isCurrent: true })]).owed, 0);
+  is("this month's own requirement is not paid from thin air",
+     settle([M(2026, 7, 8, 4), M(2026, 8, 8, 6, { isCurrent: true })]).owed, 4);
   is("held month opens no debt", settle([M(2026, 8, 8, 0, { onHold: true })]).debts.length, 0);
   is("attendance while held pays earlier debt",
      settle([M(2026, 7, 8, 6), M(2026, 8, 0, 2, { onHold: true })]).owed, 0);

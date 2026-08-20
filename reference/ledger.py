@@ -82,11 +82,10 @@ def settle(months: list[MonthResult]) -> Settlement:
                 debt.expired = True
                 result.expired_hours += debt.outstanding
 
-        if month.is_current:
-            continue
-
         # A held month requires nothing, so everything attended in it is excess and pays
-        # down earlier debt. That is the point of coming in while on hold.
+        # down earlier debt. That is the point of coming in while on hold. The current
+        # month pays too, from hours already sat (never from the projection): a makeup
+        # redeemed today should clear the old debt today, not at the end of the month.
         shortfall = month.shortfall
         excess = max(0, month.attended - month.required)
 
@@ -101,6 +100,11 @@ def settle(months: list[MonthResult]) -> Settlement:
                 excess -= applied
                 result.payments.append((month.label, debt.label, applied))
             result.unused_excess += excess
+
+        # The current month never opens a debt: its gap is a projection, reported as
+        # makeups to schedule rather than as hours already owed.
+        if month.is_current:
+            continue
 
         if shortfall and not month.on_hold:
             result.debts.append(
