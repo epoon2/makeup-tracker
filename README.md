@@ -39,6 +39,37 @@ expires and drops off the report.
 
 **Behind pace** flags a student who is running short of even pace for the current month.
 
+**A 12:00 AM entry is a makeup-redemption marker, never a real session** (real sessions run
+1:30–7:30 pm). Its hours credit the month it is dated in, exactly like any other hours, but
+it is not treated as evidence of the student's weekly schedule. The report says how many of
+a month's hours arrived this way. Hours already attended in the current month that exceed
+the month's requirement pay old debt immediately, so a makeup redeemed today clears the
+old month today.
+
+**A plan number can mean hours or sessions.** For students whose sessions run 2 hours, a
+plan of 4 sometimes means 4 sessions × 2 hours = 8 hours a month, and the plan cannot
+always be changed in Radius because it is tied to billing. The tool infers which reading
+fits from what full months actually delivered, flags the students it reinterpreted, and
+asks in the review queue when the history is too thin to tell. The answer is remembered.
+
+### How to log makeups so the numbers stay exact
+
+One logged hour must equal one delivered hour. Concretely:
+
+- **Never fold a makeup hour into a longer entry.** A student sitting 3–5 pm where one hour
+  is their regular session and one is a makeup gets **two** entries: the regular hour at its
+  real time, and a separate 1-hour entry at **12:00–1:00 AM** dated to the month being
+  credited (same month or a past month). This also makes the Radius session counts come out
+  right without inventing filler entries.
+- **Date the 12 AM marker on the exact missed date** where possible. The hours land the same
+  either way, but the marker then also clears that date from the missed list.
+- **When Radius refuses to backdate** (the enrollment plan rolled over at the month
+  boundary), log the marker in the current month instead; the two-month grace ledger
+  credits it against the oldest debt automatically, and now does so the same day.
+- **Genuine 2-hour students keep their honest 2-hour entries.** The rule is only about
+  makeup hours hiding inside longer entries.
+- **Makeups are not honored beyond the two-month grace.**
+
 **Enrollment dates prorate.** A student who started mid-month only owes the part of the
 month they were enrolled for.
 
