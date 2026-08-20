@@ -193,6 +193,16 @@ never the projection, and the current month still never opens a debt of its own.
 **Makeups are never honored beyond the two-month grace** (confirmed by Jorge 20 Aug 2026).
 The grace dial stays at 2.
 
+**Radius has a per-student hold screen with exact start and end dates** (Jorge found it
+20 Aug 2026; every observed hold is whole calendar months). The queue's hold questions
+accept a month range for this reason. **If that screen can be exported, build the
+importer**: a third optional drop zone that turns hold periods into closed hold
+overrides and removes hold questions from the queue entirely. Waiting on a sample
+export from Jorge to learn its columns; do not guess the format.
+
+**The audit panel points, it never changes numbers.** Thresholds are deliberately
+conservative (`EXCESS_WORTH_ASKING = 3`); a list with false alarms stops being read.
+
 ---
 
 ## Settled decisions. Do not reopen.
