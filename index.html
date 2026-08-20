@@ -115,6 +115,8 @@
   .bad-txt { color: var(--bad); font-weight: 600; }
   .checkfail { font: 12.5px/1.7 ui-monospace, Menlo, Consolas, monospace; color: var(--bad);
                white-space: pre-wrap; margin-top: 8px; }
+  input.holdDate { width: 100px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
+                   font-size: 13px; font-family: inherit; }
   .qhead { margin: 14px 2px 2px; font-size: 12px; font-weight: 700; letter-spacing: .04em;
            text-transform: uppercase; color: var(--muted); }
   .q { border-top: 1px solid #eef1f5; padding: 12px 2px; }
@@ -885,6 +887,7 @@ let overrides = { version: 1, students: {} };
 
 const monthKey = (y, m) => y + "-" + String(m).padStart(2, "0");
 const monthKeyAfter = (mk) => { const [y, m] = mk.split("-").map(Number); return m === 12 ? monthKey(y + 1, 1) : monthKey(y, m + 1); };
+const prevMonthKey = (mk) => { const [y, m] = mk.split("-").map(Number); return m === 1 ? monthKey(y - 1, 12) : monthKey(y, m - 1); };
 
 // Classify a typed hold period. Month-aligned dates (the 1st through a last
 // day of a month, which is how Radius holds almost always run) become a clean
@@ -1449,7 +1452,9 @@ function buildQuestions(rep) {
         options: [
           { label: "On hold from " + monthLabel(mk) + " (still on hold)", apply: () => {
               ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
-          { label: "On hold — enter the months", suggest: likelyHold, monthsPicker: true, defaultFrom: mk, defaultTo: mk },
+          { label: "On hold — enter the dates", suggest: likelyHold, datesPicker: true,
+            defaultFrom: fmt(fromDayNumber(mkDate(mo.y, mo.m, 1).n)),
+            defaultTo: fmt(fromDayNumber(mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n)) },
           { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
         ].concat(offerNotEnrolled
           ? [{ label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
@@ -1477,8 +1482,9 @@ function buildQuestions(rep) {
             { label: "Away — still owes " + lastMonth.shortfall + " hrs", suggest: true, apply: () => {} },
             { label: "On hold from " + monthLabel(nextKey), apply: () => {
                 ovFor(s.key, true).holds.push({ start: nextKey, until: null, source: "entered" }); } },
-            { label: "On hold — enter the months", monthsPicker: true,
-              defaultFrom: monthKey(lastMonth.y, lastMonth.m), defaultTo: monthKey(lastMonth.y, lastMonth.m) },
+            { label: "On hold — enter the dates", datesPicker: true,
+              defaultFrom: fmt(fromDayNumber(mkDate(lastMonth.y, lastMonth.m, 1).n)),
+              defaultTo: fmt(fromDayNumber(mkDate(lastMonth.y, lastMonth.m, lastDayOf(lastMonth.y, lastMonth.m)).n)) },
           ],
         });
       }
@@ -1542,6 +1548,18 @@ function buildQuestions(rep) {
   const ORDER = ["hold", "absent", "stopped", "plan", "schedule"];
   out.sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.who.localeCompare(b.who));
   return out;
+}
+
+// Store a typed hold period on a student. Month-aligned dates become a clean
+// month hold; anything else is kept exact and prorates the partly held months.
+function saveHoldDates(key, from, to) {
+  if (!from || !to) { say("Type both dates as m/d/yyyy.", "error"); return false; }
+  const entry = holdEntryFromDates(from, to);
+  if (!entry) { say("The hold cannot end before it starts.", "error"); return false; }
+  const rec = ovFor(key, true);
+  if (entry.kind === "months") rec.holds.push({ start: entry.start, until: entry.until, source: "entered" });
+  else rec.holdDates.push({ from: entry.from, to: entry.to });
+  return true;
 }
 
 const QUEUE_HEADINGS = {
@@ -1626,15 +1644,12 @@ function renderQueue() {
           WEEKDAYS.map((w, d) => '<label><input type="checkbox" value="' + d + '">' + w + "</label>").join("") +
           ' <button data-save="' + i + '">Save days</button></div>'
       : "") +
-    (q.options.some((o) => o.monthsPicker)
+    (q.options.some((o) => o.datesPicker)
       ? (() => {
-          const def = q.options.find((o) => o.monthsPicker);
-          const opts = (sel) => report.span.map(([y, m]) =>
-            '<option value="' + monthKey(y, m) + '"' + (monthKey(y, m) === sel ? " selected" : "") + '>' +
-            monthLabel(monthKey(y, m)) + "</option>").join("");
+          const def = q.options.find((o) => o.datesPicker);
           return '<div class="days" id="mpicker' + i + '" hidden>' +
-            'from <select data-mfrom="' + i + '">' + opts(def.defaultFrom) + "</select> " +
-            'through <select data-mto="' + i + '">' + opts(def.defaultTo) + "</select> " +
+            'from <input class="holdDate" data-mfrom="' + i + '" value="' + esc(def.defaultFrom) + '" placeholder="m/d/yyyy"> ' +
+            'through <input class="holdDate" data-mto="' + i + '" value="' + esc(def.defaultTo) + '" placeholder="m/d/yyyy"> ' +
             '<button data-msave="' + i + '">Save hold</button></div>';
         })()
       : "") + "</div>"
@@ -1647,7 +1662,7 @@ function renderQueue() {
       else {
         const opt = q.options[+b.dataset.o];
         if (opt.picker) { const p = el("picker" + b.dataset.q); p.hidden = !p.hidden; return; }
-        if (opt.monthsPicker) { const p = el("mpicker" + b.dataset.q); p.hidden = !p.hidden; return; }
+        if (opt.datesPicker) { const p = el("mpicker" + b.dataset.q); p.hidden = !p.hidden; return; }
         opt.apply();
         markAnswered(q.key, q.id);
       }
@@ -1658,11 +1673,9 @@ function renderQueue() {
   list.querySelectorAll("button[data-msave]").forEach((b) => {
     b.onclick = async () => {
       const i = +b.dataset.msave, q = queue[i];
-      const from = list.querySelector('select[data-mfrom="' + i + '"]').value;
-      const to = list.querySelector('select[data-mto="' + i + '"]').value;
-      if (mkIndex(to) < mkIndex(from)) { say("The hold cannot end before it starts.", "error"); return; }
-      // `until` is exclusive, so a hold through August ends at September.
-      ovFor(q.key, true).holds.push({ start: from, until: monthKeyAfter(to), source: "entered" });
+      const from = parseDate(list.querySelector('input[data-mfrom="' + i + '"]').value);
+      const to = parseDate(list.querySelector('input[data-mto="' + i + '"]').value);
+      if (!saveHoldDates(q.key, from, to)) return;
       markAnswered(q.key, q.id);
       await saveOverrides();
       rerun();
@@ -1755,6 +1768,23 @@ function detailFor(s) {
   if (s.rec) rows.push("<dt>Enrollment</dt><dd>" + esc(s.rec.status) +
     (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
 
+  // Every student can take a hold, not only the ones the queue asked about.
+  const heldBits = [];
+  if (s.over) {
+    for (const h of s.over.holds || []) {
+      heldBits.push(h.until
+        ? monthLabel(h.start) + " through " + monthLabel(prevMonthKey(h.until))
+        : monthLabel(h.start) + " onward");
+    }
+    for (const h of s.over.holdDates || []) heldBits.push(h.from + " to " + h.to);
+  }
+  rows.push("<dt>Holds entered</dt><dd>" + (heldBits.length ? esc(heldBits.join(" · ")) : '<span style="color:var(--muted)">none</span>') +
+    ' <button class="ghost small" data-addhold="' + esc(s.key) + '">Add a hold</button>' +
+    '<span class="days" data-holdform="' + esc(s.key) + '" hidden> ' +
+    'from <input class="holdDate" data-hfrom placeholder="m/d/yyyy"> ' +
+    'through <input class="holdDate" data-hto placeholder="m/d/yyyy"> ' +
+    '<button data-hsave="' + esc(s.key) + '">Save hold</button></span></dd>');
+
   const monthLines = s.months.map((mo) => {
     const ms = s.schedules[mo.y + "-" + mo.m];
     let line = "<b>" + esc(mo.shortLabel) + "</b>: " + mo.attended + " of " + mo.required + " hrs";
@@ -1840,6 +1870,29 @@ function renderTable() {
       const row = wrap.querySelector('tr.detail[data-d="' + tr.dataset.i + '"]');
       row.hidden = !row.hidden;
     });
+  });
+
+  wrap.querySelectorAll("button[data-addhold]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const form = wrap.querySelector('span[data-holdform="' + b.dataset.addhold.replace(/"/g, '\\"') + '"]');
+      if (form) form.hidden = !form.hidden;
+    };
+  });
+  wrap.querySelectorAll("button[data-hsave]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      const form = b.closest("span[data-holdform]");
+      const from = parseDate(form.querySelector("input[data-hfrom]").value);
+      const to = parseDate(form.querySelector("input[data-hto]").value);
+      if (!saveHoldDates(b.dataset.hsave, from, to)) return;
+      await saveOverrides();
+      rerun();
+    };
+  });
+  // Typing in the hold inputs must not toggle the row open and shut.
+  wrap.querySelectorAll("input.holdDate").forEach((inp) => {
+    inp.onclick = (e) => e.stopPropagation();
   });
   // Searching for one student should show their record, not make you click again.
   if (focusKey && list.length === 1) {
