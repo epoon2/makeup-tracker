@@ -31,6 +31,7 @@ class MonthResult:
     month: int
     required: int
     attended: int
+    marker_hours: int = 0
     scheduled_dates: list[dt.date] = field(default_factory=list)
     missed_dates: list[dt.date] = field(default_factory=list)
     absent_whole_month: bool = False
@@ -102,6 +103,10 @@ def build_month(
 
     in_month = [v for v in visits if first <= v.date <= last]
     attended = sum(v.hours for v in in_month)
+    # Hours arriving as 12 AM markers are makeup redemptions credited to this month.
+    # They count in `attended` like any hour; this only remembers how many, so the
+    # report can say where a month's total came from.
+    marker_hours = sum(v.hours for v in in_month if v.marker)
 
     # A hold covers whole calendar months only: nobody is on hold for half a month. It
     # freezes the requirement rather than accruing debt. Attendance during a held month
@@ -125,6 +130,7 @@ def build_month(
         month=month,
         required=required,
         attended=attended,
+        marker_hours=marker_hours,
         prorated_from=prorated_from,
         on_hold=on_hold,
         is_current=is_current,
