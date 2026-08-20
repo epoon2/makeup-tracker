@@ -35,9 +35,10 @@ ROSTER_COLUMNS = [
     "Center",
 ]
 
-# Columns that may carry the session's start time. Radius exports vary; the first one
-# present and parseable wins, and a time inside Attendance Date is the fallback.
-TIME_COLUMNS = ["Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"]
+# Columns that may carry the session's start time. The real Radius attendance export
+# calls it "Arrival Time" (verified against the 8/20/2026 export, format "4:00 PM");
+# the rest are fallbacks, and a time inside Attendance Date is the last resort.
+TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"]
 
 # 'Recurring' appears in Enrollment End Date to mean "no end date", not a date.
 NO_END_SENTINEL = {"recurring", "", "none", "n/a"}
