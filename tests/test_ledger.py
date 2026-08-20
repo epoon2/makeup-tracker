@@ -43,3 +43,20 @@ def test_hold_and_current_month_open_no_debt():
     s = settle([M(2026, 5, 0, 0, on_hold=True), M(2026, 8, 8, 2, is_current=True)])
     assert s.owed == 0
     assert not s.debts
+
+
+def test_hours_already_sat_this_month_pay_old_debt_at_once():
+    s = settle([M(2026, 7, 8, 4), M(2026, 8, 8, 12, is_current=True)])
+    assert s.owed == 0
+    assert s.payments == [("August 2026", "Jul 2026", 4)]
+
+
+def test_current_month_requirement_is_not_paid_from_thin_air():
+    s = settle([M(2026, 7, 8, 4), M(2026, 8, 8, 6, is_current=True)])
+    assert s.owed == 4
+
+
+def test_current_month_still_opens_no_debt():
+    s = settle([M(2026, 8, 8, 2, is_current=True)])
+    assert s.owed == 0
+    assert s.debts == []
