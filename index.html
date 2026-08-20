@@ -1091,10 +1091,12 @@ function settle(months) {
    in it stops being read, which is worse than no list.
 --------------------------------------------------------------------------- */
 
-// Legitimate sessions run 1:30-7:30 pm. Makeups can sit outside that window, so an
-// off-hours entry is a makeup or a typo - either way worth a look.
-const OPEN_MINUTES = 13 * 60 + 30;
-const CLOSE_MINUTES = 19 * 60 + 30;
+// The 1:30-7:30 pm window is the WEEKDAY window. The real export shows the centre runs
+// weekend mornings, and Arrival Time is a check-in clock, so sessions routinely end a few
+// minutes past 7:30. What survives contact with the data: weekday starts before 1:30 pm
+// are odd, starts before 8 am are odd on any day, end times are not checked.
+const WEEKDAY_OPEN_MINUTES = 13 * 60 + 30;
+const ANY_DAY_OPEN_MINUTES = 8 * 60;
 // A month running this many hours past its requirement with no 12 AM markers suggests
 // makeup hours folded into longer entries the old way.
 const EXCESS_WORTH_ASKING = 3;
@@ -1114,10 +1116,13 @@ function auditVisits(visits, typicalSessionHours, todayN) {
                  detail: "dated " + fmt(v.date) + ", which has not happened yet" });
     }
     if (!v.marker && v.startMinutes !== null && v.startMinutes !== undefined) {
-      const end = v.startMinutes + v.hours * 60;
-      if (v.startMinutes < OPEN_MINUTES || end > CLOSE_MINUTES) {
+      const weekend = weekdayOf(v.date.n) >= 5;
+      const tooEarly = v.startMinutes < ANY_DAY_OPEN_MINUTES ||
+                       (!weekend && v.startMinutes < WEEKDAY_OPEN_MINUTES);
+      if (tooEarly) {
+        const when = v.startMinutes < ANY_DAY_OPEN_MINUTES ? "before 8 am" : "on a weekday before the 1:30 pm opening";
         out.push({ key: v.key, date: v.date, kind: "off-hours",
-                   detail: "starts " + fmtMinutes(v.startMinutes) + ", outside 1:30-7:30 pm and not a 12 AM marker - makeup or typo?" });
+                   detail: "starts " + fmtMinutes(v.startMinutes) + " " + when + ", and is not a 12 AM marker - makeup or typo?" });
       }
     }
     if (!v.marker) {
@@ -1505,11 +1510,19 @@ function renderAudit() {
   const panel = el("auditPanel");
   panel.hidden = !entries.length;
   if (panel.hidden) { el("auditList").innerHTML = ""; return; }
-  el("auditTitle").textContent = entries.length + " attendance entr" + (entries.length === 1 ? "y" : "ies") + " look odd";
-  el("auditList").innerHTML = entries.slice(0, 40).map((e) =>
-    '<div class="q"><div class="who">' + esc(e.who) + (e.date ? " · " + esc(fmtLong(e.date)) : "") + "</div>" +
-    '<div class="ask">' + esc(e.detail) + "</div></div>"
-  ).join("") + (entries.length > 40 ? '<div class="ask" style="padding-top:10px">Showing 40 of ' + entries.length + ".</div>" : "");
+  const byStudent = new Map();
+  for (const e of entries) {
+    if (!byStudent.has(e.who)) byStudent.set(e.who, []);
+    byStudent.get(e.who).push(e);
+  }
+  const groups = [...byStudent.entries()];
+  el("auditTitle").textContent = entries.length + " attendance entr" + (entries.length === 1 ? "y" : "ies") +
+    " look odd, across " + groups.length + " student" + (groups.length === 1 ? "" : "s");
+  el("auditList").innerHTML = groups.slice(0, 25).map(([who, list]) =>
+    '<div class="q"><div class="who">' + esc(who) + ' <span class="pill mute">' + list.length + "</span></div>" +
+    list.map((e) => '<div class="ask">' + (e.date ? esc(fmtShort(e.date)) + " · " : "") + esc(e.detail) + "</div>").join("") +
+    "</div>"
+  ).join("") + (groups.length > 25 ? '<div class="ask" style="padding-top:10px">Showing 25 of ' + groups.length + " students.</div>" : "");
 }
 
 function renderQueue() {
@@ -2232,10 +2245,12 @@ function selfCheck() {
   const av = (y, mth, d, hours, start, marker) =>
     Object.assign(visit(y, mth, d, hours), { startMinutes: start, marker: !!marker });
   const oddball = [
-    av(2026, 8, 4, 1, 15 * 60),          // clean
+    av(2026, 8, 4, 1, 15 * 60),          // Tue afternoon: clean
     av(2026, 7, 28, 1, 0, true),         // marker: never flagged
-    av(2026, 8, 5, 1, 11 * 60),          // starts 11 AM
-    av(2026, 8, 6, 2, 18 * 60),          // ends 8 PM, and 2 hrs for a 1-hr student
+    av(2026, 8, 5, 1, 11 * 60),          // Wed 11 AM: weekday morning, flagged
+    av(2026, 8, 8, 1, 10 * 60),          // Sat 10 AM: weekend morning, normal
+    av(2026, 8, 8, 1, 6 * 60),           // Sat 6 AM: before 8 am, flagged anywhere
+    av(2026, 8, 6, 2, 18 * 60),          // ends past 7:30: NOT flagged (check-in drift), but 2 hrs for a 1-hr student is
     av(2026, 8, 7, 1, 15 * 60),          // duplicate pair
     av(2026, 8, 7, 1, 15 * 60),
     av(2026, 8, 25, 1, 15 * 60),         // future (today is the 19th)

@@ -103,15 +103,17 @@ def test_audit_flags_the_odd_entries_and_nothing_else():
     today = dt.date(2026, 8, 19)
     clean = Visit("t", dt.date(2026, 8, 4), 1, 8, start_minutes=15 * 60)
     marker = Visit("t", dt.date(2026, 7, 28), 1, 8, start_minutes=0, marker=True)
-    off = Visit("t", dt.date(2026, 8, 5), 1, 8, start_minutes=11 * 60)
-    late = Visit("t", dt.date(2026, 8, 6), 2, 8, start_minutes=18 * 60)   # ends 8 pm
+    off = Visit("t", dt.date(2026, 8, 5), 1, 8, start_minutes=11 * 60)       # Wed morning
+    sat_ok = Visit("t", dt.date(2026, 8, 8), 1, 8, start_minutes=10 * 60)  # Sat morning: normal
+    sat_dawn = Visit("t", dt.date(2026, 8, 8), 1, 8, start_minutes=6 * 60) # 6 AM: odd anywhere
+    late = Visit("t", dt.date(2026, 8, 6), 2, 8, start_minutes=18 * 60)    # ends 8 pm: drift, not flagged
     dup_a = Visit("t", dt.date(2026, 8, 7), 1, 8, start_minutes=15 * 60)
     dup_b = Visit("t", dt.date(2026, 8, 7), 1, 8, start_minutes=15 * 60)
     future = Visit("t", dt.date(2026, 8, 25), 1, 8, start_minutes=15 * 60)
 
     kinds = sorted(e.kind for e in audit_visits(
-        [clean, marker, off, late, dup_a, dup_b, future], 1, today))
-    # `late` is both off-hours (ends past 7:30) and a 2-hour entry for a 1-hour student
+        [clean, marker, off, sat_ok, sat_dawn, late, dup_a, dup_b, future], 1, today))
+    # `late` only trips the folded check now; ends past 7:30 are check-in drift
     assert kinds == ["duplicate", "folded", "future", "off-hours", "off-hours"]
 
     assert audit_month("t", "July 2026", 8, 12, 0, False).kind == "heavy-month"
