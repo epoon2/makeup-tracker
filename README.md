@@ -138,6 +138,24 @@ and Enter to choose, Escape to clear.
 
 ## The review queue
 
+The queue is grouped by kind of question, so the answers can be batched: suspected
+holds first (with the Radius hold screen open beside it), then unexplained absent
+months, students who stopped partway, plan readings, and guessed schedules last.
+A hold can be answered with its exact months — "On hold — enter the months" takes a
+start and end month straight off the Radius hold screen — or left open-ended for a
+student still on hold, which closes itself when a later export shows them enrolled.
+
+## Attendance worth checking
+
+A separate panel lists entries that look odd, for a person to verify in Radius.
+Nothing in it changes any number; it only points. It flags entries starting outside
+the 1:30–7:30 pm window that are not 12 AM markers (a makeup or a typo), identical
+duplicate entries on the same date and time, 2-hour entries for students whose
+sessions run 1 hour (the folded-makeup pattern the 12 AM convention replaces),
+entries dated in the future, and months running well past their requirement with no
+12 AM markers to explain it.
+
+
 The tool asks rather than waiting to be told. Everything it had to guess becomes a
 question with the likely answer marked:
 
