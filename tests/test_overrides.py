@@ -99,3 +99,37 @@ def test_a_hold_on_the_current_month_puts_the_student_on_the_hold_list():
     assert found.current.required == 0
     assert any(s.key == target.key for s in after.held)
     assert not any(s.key == target.key for s in after.behind_pace)
+
+
+def test_plan_reading_infers_sessions_and_honours_the_pin():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.report import resolve_plan
+
+    today = dt.date(2026, 8, 19)
+    two_hour = [Visit("t", dt.date(2026, 6 + m, 3 + 7 * w), 2, 4) for m in (0, 1) for w in range(4)]
+    inferred = resolve_plan(4, two_hour, today, None)
+    assert (inferred["hours"], inferred["reading"]) == (8, "sessions")
+
+    # An 8/month plan delivering 8 hours as 2-hour entries stays an hours plan.
+    kept = resolve_plan(8, two_hour, today, None)
+    assert (kept["hours"], kept["reading"]) == (8, "hours")
+
+    # Too little history: uncertain, defaults to hours, and a pin decides it.
+    thin = [Visit("t", dt.date(2026, 7, 7), 2, 4)]
+    unsure = resolve_plan(4, thin, today, None)
+    assert (unsure["hours"], unsure["certain"]) == (4, False)
+    assert resolve_plan(4, thin, today, "sessions")["hours"] == 8
+
+    # Marker hours are redemptions, not plan evidence.
+    marked = two_hour + [Visit("t", dt.date(2026, 6, 20), 4, 4, marker=True)]
+    assert resolve_plan(4, marked, today, None)["hours"] == 8
+
+
+def test_plan_reading_round_trips_through_serialisation():
+    from reference.overrides import Overrides
+
+    o = Overrides()
+    o.get("k").plan_reading = "sessions"
+    again = Overrides.from_dict(o.to_dict())
+    assert again.get("k").plan_reading == "sessions"

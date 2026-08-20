@@ -25,6 +25,7 @@ class StudentReport:
     schedules: dict
     settlement: Settlement
     record: RosterRecord | None
+    plan_info: dict = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
 
     @property
@@ -113,6 +114,54 @@ class Report:
         return sorted((s for s in self.students if s.on_hold), key=lambda s: s.display)
 
 
+def resolve_plan(raw_plan: int, visits, today: dt.date, pinned: str | None) -> dict:
+    """What does the plan number mean for this student: hours, or sessions?
+
+    Radius plans are sold in 'sessions per month', and for one-hour students the two
+    readings are the same number. For two-hour students the centre sometimes leaves the
+    plan at 4 while delivering 4 x 2 = 8 hours a month, and the plan cannot always be
+    changed (it is tied to billing). So the meaning is inferred from what full months
+    actually delivered, and a person can pin it either way from the review queue.
+    """
+    raw = raw_plan if raw_plan > 0 else 8
+    real = [v for v in visits if v.hours > 0 and not v.marker]
+    out = {"hours": raw, "raw": raw, "session_hours": 1, "reading": "hours", "certain": True, "source": "plan"}
+    if not real:
+        return out
+
+    # Typical session length, same rule as schedule inference: mode, tie to shorter.
+    counts = collections.Counter(v.hours for v in real)
+    top = max(counts.values())
+    length = min(h for h, c in counts.items() if c == top)
+    out["session_hours"] = length
+    if length < 2:
+        return out
+
+    if pinned == "hours":
+        return {**out, "source": "override"}
+    if pinned == "sessions":
+        return {**out, "hours": raw * length, "reading": "sessions", "source": "override"}
+
+    # Evidence: real (non-marker) hours per completed month with any attendance.
+    totals: dict[tuple[int, int], int] = collections.defaultdict(int)
+    for v in real:
+        if (v.date.year, v.date.month) == (today.year, today.month):
+            continue
+        totals[(v.date.year, v.date.month)] += v.hours
+    values = sorted(totals.values())
+    if len(values) < 2:
+        return {**out, "certain": False}
+
+    mid = len(values) // 2
+    typical = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+    d1, d2 = abs(typical - raw), abs(typical - raw * length)
+    if d2 < d1:
+        return {**out, "hours": raw * length, "reading": "sessions", "source": "inferred"}
+    if d1 < d2:
+        return out
+    return {**out, "certain": False}
+
+
 def _display(key: str) -> str:
     first, _, last = key.partition("\x1f")
     return f"{first.title()} {last.title()}".strip()
@@ -135,9 +184,11 @@ def build(loaded: Loaded, today: dt.date | None = None,
 
     students: list[StudentReport] = []
     for key, visits in by_student.items():
-        plan = next((v.sessions_per_month for v in visits if v.sessions_per_month), 8)
+        raw_plan = next((v.sessions_per_month for v in visits if v.sessions_per_month), 8)
         record = loaded.roster.get(key)
         over = overrides.peek(key)
+        plan_info = resolve_plan(raw_plan, visits, today, over.plan_reading if over else None)
+        plan = plan_info["hours"]
 
         # An export showing the student enrolled closes any open hold, dated by the month
         # the export covers rather than by today, so re-running an old export cannot
@@ -175,12 +226,19 @@ def build(loaded: Loaded, today: dt.date | None = None,
             display=_display(key),
             student_id=record.student_id if record else "",
             plan_hours=plan,
+            plan_info=plan_info,
             schedule=schedule,
             months=months,
             schedules=schedules,
             settlement=settle(months),
             record=record,
         )
+        if plan_info["reading"] == "sessions":
+            report.flags.append(
+                f"plan {plan_info['raw']}/month read as {plan_info['raw']} sessions of "
+                f"{plan_info['session_hours']} hrs = {plan} hrs/month"
+                + (" (set by hand)" if plan_info["source"] == "override" else " (from the attendance pattern)")
+            )
         if not schedule.confident:
             report.flags.append(f"schedule uncertain: {schedule.reason}")
         if over and over.note:
