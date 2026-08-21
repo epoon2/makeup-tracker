@@ -82,6 +82,8 @@
   tr.head { cursor: pointer; }
   tr.head:hover td { background: #f7fafd; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th .hsub { display: block; font-weight: 400; font-size: 10.5px; text-transform: none;
+             letter-spacing: 0; color: var(--muted); opacity: .85; }
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
   .pill.warn { background: var(--warn-bg); color: var(--warn); }
   .pill.bad { background: #fdeceb; color: var(--bad); }
@@ -1830,8 +1832,8 @@ function renderCards() {
   const flagged = report.students.reduce((s, x) =>
     s + x.months.filter((mo) => mo.absentWholeMonth && mo.basis === UNVERIFIABLE).reduce((a, mo) => a + mo.required, 0), 0);
   el("cards").innerHTML =
-    card(report.owing.length, "owe makeup hours", owedHours + " hrs outstanding") +
-    card(report.behind.length, "behind pace this month", bookHours + " makeup hrs granted") +
+    card(report.owing.length, "owed makeup hours", owedHours + " hrs from past months") +
+    card(report.behind.length, "to book this month", bookHours + " hrs short of the plan") +
     card(report.held.length, "on hold", "debt frozen") +
     card(report.neverAttended.length, "enrolled, never attended", "no visits in this export") +
     card(flagged, "hrs need checking", "whole-month absences we could not confirm");
@@ -1841,8 +1843,8 @@ function renderCards() {
 // look like it only found 159 people.
 const TABS = [
   ["all", "All students"],
-  ["owing", "Owes hours"],
-  ["behind", "Behind pace"],
+  ["owing", "Owed from past months"],
+  ["behind", "To book this month"],
   ["held", "On hold"],
   ["never", "Never attended"],
 ];
@@ -1958,13 +1960,17 @@ function renderTable() {
   if (!list.length) { wrap.innerHTML = '<div class="empty">Nobody here.</div>'; return; }
 
   wrap.innerHTML =
-    '<div class="sub" style="margin:2px 0 8px">Owes = unpaid hours from past months, still inside the two-month grace. ' +
-    'Makeups now = hours to book before this month closes, based on the projection; it shrinks as they attend.</div>' +
-    '<table><thead><tr><th>Student</th><th>Schedule</th><th class="num">Plan</th>' +
-    '<th class="num" title="Unpaid shortfall hours from past months, inside the two-month grace">Owes</th>' +
-    '<th class="num" title="Hours still to book this month, from the current-month projection">Makeups now</th>' +
-    '<th class="num" title="Visits in the export">Came</th>' +
-    '<th class="num" title="Scheduled days with nothing recorded, after week-level netting">Missed</th>' +
+    '<div class="sub" style="margin:2px 0 8px">' +
+    '<b>Makeup hrs owed</b> are unpaid hours from months that already closed, still inside the two-month grace. ' +
+    '<b>Hrs to book now</b> is what this month is short after projecting the sessions left in it, so it shrinks as they attend.</div>' +
+    '<table><thead><tr><th>Student</th><th>Schedule</th>' +
+    '<th class="num">Plan<span class="hsub">hrs/month</span></th>' +
+    '<th class="num" title="Unpaid shortfall hours from months that already closed, inside the two-month grace">' +
+    'Makeup hrs owed<span class="hsub">past months</span></th>' +
+    '<th class="num" title="What this month is still short after projecting the sessions left in it">' +
+    'Hrs to book now<span class="hsub">this month</span></th>' +
+    '<th class="num" title="Visits recorded in the export">Came<span class="hsub">visits</span></th>' +
+    '<th class="num" title="Scheduled days with nothing recorded">Missed<span class="hsub">sessions</span></th>' +
     "<th>Flags</th></tr></thead><tbody>" +
     list.map((s, i) => {
       const flag = s.onHold ? '<span class="pill mute">on hold</span>' : "";
@@ -2211,8 +2217,8 @@ function exportRows() {
   const stamp = "calculating " + fmtLong(report.windowFrom) + " to " + fmtLong(report.windowTo) +
                 ", last attendance " + fmtLong(report.dataThrough) + ", run " + fmtLong(report.today);
 
-  const owes = [["Student", "Plan (hrs/mo)", "Schedule", "Schedule confident", "Hours owed",
-                 "Oldest debt", "Needs checking", "Missed dates"]];
+  const owes = [["Student", "Plan (hrs/mo)", "Schedule", "Schedule confident",
+                 "Makeup hrs owed (past months)", "Oldest debt", "Needs checking", "Missed dates"]];
   for (const s of report.owing) {
     owes.push([s.display, s.plan, scheduleLabel(s.schedule), s.schedule.confident ? "yes" : "no",
                s.owed, s.ledger.open.length ? s.ledger.open[0].label : "",
@@ -2220,7 +2226,7 @@ function exportRows() {
   }
 
   const behind = [["Student", "Plan (hrs/mo)", "Schedule", "Attended so far", "Projected",
-                   "Makeup hrs granted this month", "Sessions left"]];
+                   "Hrs to book now (this month)", "Sessions left"]];
   for (const s of report.behind) {
     const c = s.current;
     behind.push([s.display, s.plan, scheduleLabel(s.schedule), c.attended, c.projected,
@@ -2256,15 +2262,15 @@ function exportRows() {
                  ["Students with attendance", report.students.length],
                  ["Owe makeup hours", report.owing.length],
                  ["Hours outstanding", report.owing.reduce((a, s) => a + s.owed, 0)],
-                 ["Behind pace this month", report.behind.length],
+                 ["To book this month", report.behind.length],
                  ["Hours to book this month", report.behind.reduce((a, s) => a + s.toSchedule, 0)],
                  ["On hold", report.held.length],
                  ["Enrolled, never attended", report.neverAttended.length], []];
   for (const w of report.warnings) notes.push(["Note", w]);
 
   return [
-    { name: "Owes hours", rows: owes },
-    { name: "Behind pace", rows: behind },
+    { name: "Owed past months", rows: owes },
+    { name: "To book this month", rows: behind },
     { name: "Attended dates", rows: came },
     { name: "Missed dates", rows: missed },
     { name: "Never attended", rows: never },
