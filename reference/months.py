@@ -35,6 +35,7 @@ class MonthResult:
     scheduled_dates: list[dt.date] = field(default_factory=list)
     missed_dates: list[dt.date] = field(default_factory=list)
     absent_whole_month: bool = False
+    assumed_hold: bool = False
     absence_basis: str = ""
     absence_detail: str = ""
     prorated_from: dt.date | None = None
@@ -94,6 +95,7 @@ def build_month(
     on_hold: bool | None = None,
     plan_override: int | None = None,
     force_not_enrolled: bool = False,
+    force_charge: bool = False,
     hold_ranges: list[tuple[dt.date, dt.date]] = (),
     hour_adjust: int = 0,
 ) -> MonthResult:
@@ -228,10 +230,24 @@ def build_month(
             result.required = 0
             result.note = f"not enrolled during {result.label} ({verdict.detail}), no makeups owed"
         elif verdict.basis == UNVERIFIABLE:
-            result.note = (
-                f"{result.required} hrs because they were not here in {result.label}; "
-                f"enrollment that month could not be confirmed ({verdict.detail})"
-            )
+            if force_charge:
+                result.note = (
+                    f"{result.required} hrs because they were enrolled and absent all of "
+                    f"{result.label}, confirmed by hand"
+                )
+            else:
+                # A whole month with nothing recorded is assumed to be a hold: at this
+                # centre that is what an empty month almost always is, and charging a
+                # full plan for a month nobody attended produces makeup hours nobody
+                # will ever book. The review queue still asks, so it can be charged.
+                result.assumed_hold = True
+                result.on_hold = True
+                result.required = 0
+                result.note = (
+                    f"nothing recorded for all of {result.label}, so it is assumed to be "
+                    f"a hold and nothing is owed for it; confirm in the queue if they "
+                    f"were enrolled and simply absent"
+                )
         else:
             result.note = f"enrolled but absent all of {result.label}"
 
