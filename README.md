@@ -39,6 +39,22 @@ expires and drops off the report.
 
 **Behind pace** flags a student who is running short of even pace for the current month.
 
+**The two hour columns.** *Makeup hrs owed* is unpaid hours from months that already
+closed, still inside the two-month grace: hours the student is entitled to book.
+*Hrs to book now* is what the current month is still short after projecting the
+sessions left in it, so it shrinks on its own as they attend.
+
+**A month with no attendance at all is assumed to be a hold.** Charging a full plan
+for a month nobody attended manufactures makeup hours nobody will ever book, and at
+this centre an empty month is nearly always a hold. Nothing is owed for it, the
+review queue still asks, and answering "enrolled and absent" charges the full plan
+for that month instead.
+
+**Missed sessions are netted within each week.** Schedules drift: a Tue/Thu student
+who comes Monday and Wednesday one week has moved their sessions, not missed them. A
+week counts as short only by how many fewer sessions were attended than scheduled,
+and the earliest scheduled days are the ones forgiven.
+
 **A 12:00 AM entry is a makeup-redemption marker, never a real session** (real sessions run
 1:30–7:30 pm). Its hours credit the month it is dated in, exactly like any other hours, but
 it is not treated as evidence of the student's weekly schedule. The report says how many of
@@ -144,11 +160,17 @@ months, students who stopped partway, plan readings, and guessed schedules last.
 A hold can be answered with its exact dates — "On hold — enter the dates" takes the
 start and end dates straight off the Radius hold screen — or left open-ended for a
 student still on hold, which closes itself when a later export shows them enrolled.
-Month-aligned dates (how Radius holds almost always run) become clean whole-month
-holds; a hold that starts or ends mid-month is kept exact, and the partly held month's
+Holds are entered as whole months by default — two dropdowns, which is how Radius
+holds almost always run — with an "exact dates" toggle for the rare hold that starts
+or ends mid-month. A mid-month hold is kept exact and the partly held month's
 requirement is prorated by the scheduled sessions the hold covers. Every student's
 detail panel also has an "Add a hold" button, so a hold can be entered even when the
 queue never asked about that student.
+
+**Nothing answered is permanent.** Each entered hold has a remove button, and every
+student's detail panel has "Clear and ask again", which drops that student's saved
+answers entirely and puts their questions back in the queue. Use it after a misclick,
+or when a student's schedule changes and an old hand-set schedule no longer fits.
 
 ## Attendance worth checking
 

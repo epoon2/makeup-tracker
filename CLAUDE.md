@@ -160,8 +160,21 @@ October showing them enrolled: August and September held, October not.
 **A whole elapsed month with no attendance** is resolved from evidence, never from current
 `Enrollment Status`, which describes today and cannot testify about a past month.
 Attendance can only be recorded for an enrolled student, so a visit proves enrolment on
-that date. Bracketed on both sides means the full plan is owed and **flagged**; nothing
-after means they left; nothing before means they had not started.
+that date. Nothing after means they left; nothing before means they had not started.
+**Bracketed on both sides is assumed to be a HOLD** (Jorge, 20 Aug 2026: "for students
+that have no attendances for a whole month, just assume they were on hold"). Nothing is
+owed, the queue still asks, and a `charged` override charges the full plan instead. This
+replaced the old charge-and-flag behaviour and moved the real-data totals from
+160 students / 780 hrs owed to 100 / 301, with 62 months assumed held.
+
+**Missed sessions are netted per ISO week in both engines.** A week is short only by
+`attended - (scheduled - missed)`; the earliest scheduled days are forgiven first. This
+is the fix for week-to-week schedule drift and removed 202 phantom misses from the real
+export (1859 -> 1657). Do not revert to exact-weekday judging.
+
+**Nothing a person answers is permanent.** Per-hold remove buttons plus a per-student
+"Clear and ask again" that deletes the whole override record. Assume answers will be
+wrong sometimes: misclicks and changing schedules are normal, not exceptional.
 
 **The current month is projected**, not judged: remaining scheduled sessions added to
 hours attended, and any gap granted as makeup hours now.
