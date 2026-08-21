@@ -1468,7 +1468,8 @@ function buildQuestions(rep) {
         options: [
           { label: "On hold from " + monthLabel(mk) + " (still on hold)", apply: () => {
               ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
-          { label: "On hold — enter the dates", suggest: likelyHold, datesPicker: true,
+          { label: "On hold — pick the months", suggest: likelyHold, datesPicker: true,
+            defaultMonth: mk,
             defaultFrom: fmt(fromDayNumber(mkDate(mo.y, mo.m, 1).n)),
             defaultTo: fmt(fromDayNumber(mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n)) },
           { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
@@ -1498,7 +1499,8 @@ function buildQuestions(rep) {
             { label: "Away — still owes " + lastMonth.shortfall + " hrs", suggest: true, apply: () => {} },
             { label: "On hold from " + monthLabel(nextKey), apply: () => {
                 ovFor(s.key, true).holds.push({ start: nextKey, until: null, source: "entered" }); } },
-            { label: "On hold — enter the dates", datesPicker: true,
+            { label: "On hold — pick the months", datesPicker: true,
+              defaultMonth: monthKey(lastMonth.y, lastMonth.m),
               defaultFrom: fmt(fromDayNumber(mkDate(lastMonth.y, lastMonth.m, 1).n)),
               defaultTo: fmt(fromDayNumber(mkDate(lastMonth.y, lastMonth.m, lastDayOf(lastMonth.y, lastMonth.m)).n)) },
           ],
@@ -1724,10 +1726,16 @@ function renderQueue() {
     (q.options.some((o) => o.datesPicker)
       ? (() => {
           const def = q.options.find((o) => o.datesPicker);
+          const opts = (sel) => report.span.map(([y, m]) =>
+            '<option value="' + monthKey(y, m) + '"' + (monthKey(y, m) === sel ? " selected" : "") + '>' +
+            monthLabel(monthKey(y, m)) + "</option>").join("");
           return '<div class="days" id="mpicker' + i + '" hidden>' +
-            'from <input class="holdDate" data-mfrom="' + i + '" value="' + esc(def.defaultFrom) + '" placeholder="m/d/yyyy"> ' +
-            'through <input class="holdDate" data-mto="' + i + '" value="' + esc(def.defaultTo) + '" placeholder="m/d/yyyy"> ' +
-            '<button data-msave="' + i + '">Save hold</button></div>';
+            '<span data-mmode="months">from <select data-mfrom="' + i + '">' + opts(def.defaultMonth) + "</select> " +
+            'through <select data-mto="' + i + '">' + opts(def.defaultMonth) + "</select></span>" +
+            '<span data-mmode="dates" hidden>from <input class="holdDate" data-dfrom="' + i + '" value="' + esc(def.defaultFrom) + '" placeholder="m/d/yyyy"> ' +
+            'through <input class="holdDate" data-dto="' + i + '" value="' + esc(def.defaultTo) + '" placeholder="m/d/yyyy"></span> ' +
+            '<button data-msave="' + i + '">Save hold</button> ' +
+            '<button class="ghost" data-mswap="' + i + '">exact dates</button></div>';
         })()
       : "") + "</div>"
   ).join("") + (queue.length > 40 ? '<div class="ask" style="padding-top:10px">Showing 40 of ' + queue.length + '. Answer these and the next batch appears.</div>' : "");
@@ -1747,11 +1755,31 @@ function renderQueue() {
       rerun();
     };
   });
+  list.querySelectorAll("button[data-mswap]").forEach((b) => {
+    b.onclick = () => {
+      const p = el("mpicker" + b.dataset.mswap);
+      const monthsMode = p.querySelector('span[data-mmode="months"]');
+      const datesMode = p.querySelector('span[data-mmode="dates"]');
+      const toDates = datesMode.hidden;
+      monthsMode.hidden = toDates;
+      datesMode.hidden = !toDates;
+      b.textContent = toDates ? "whole months" : "exact dates";
+    };
+  });
   list.querySelectorAll("button[data-msave]").forEach((b) => {
     b.onclick = async () => {
       const i = +b.dataset.msave, q = queue[i];
-      const from = parseDate(list.querySelector('input[data-mfrom="' + i + '"]').value);
-      const to = parseDate(list.querySelector('input[data-mto="' + i + '"]').value);
+      const p = el("mpicker" + i);
+      let from, to;
+      if (p.querySelector('span[data-mmode="months"]').hidden) {
+        from = parseDate(p.querySelector('input[data-dfrom="' + i + '"]').value);
+        to = parseDate(p.querySelector('input[data-dto="' + i + '"]').value);
+      } else {
+        const [fy, fm] = p.querySelector('select[data-mfrom="' + i + '"]').value.split("-").map(Number);
+        const [ty, tm] = p.querySelector('select[data-mto="' + i + '"]').value.split("-").map(Number);
+        from = mkDate(fy, fm, 1);
+        to = mkDate(ty, tm, lastDayOf(ty, tm));
+      }
       if (!saveHoldDates(q.key, from, to)) return;
       markAnswered(q.key, q.id);
       await saveOverrides();
@@ -1855,12 +1883,17 @@ function detailFor(s) {
     }
     for (const h of s.over.holdDates || []) heldBits.push(h.from + " to " + h.to);
   }
+  const monthOpts = report.span.map(([y, m]) =>
+    '<option value="' + monthKey(y, m) + '">' + monthLabel(monthKey(y, m)) + "</option>").join("");
   rows.push("<dt>Holds entered</dt><dd>" + (heldBits.length ? esc(heldBits.join(" · ")) : '<span style="color:var(--muted)">none</span>') +
     ' <button class="ghost small" data-addhold="' + esc(s.key) + '">Add a hold</button>' +
     '<span class="days" data-holdform="' + esc(s.key) + '" hidden> ' +
-    'from <input class="holdDate" data-hfrom placeholder="m/d/yyyy"> ' +
-    'through <input class="holdDate" data-hto placeholder="m/d/yyyy"> ' +
-    '<button data-hsave="' + esc(s.key) + '">Save hold</button></span></dd>');
+    '<span data-hmode="months">from <select data-hmfrom>' + monthOpts + '</select> ' +
+    'through <select data-hmto>' + monthOpts + '</select></span>' +
+    '<span data-hmode="dates" hidden>from <input class="holdDate" data-hfrom placeholder="m/d/yyyy"> ' +
+    'through <input class="holdDate" data-hto placeholder="m/d/yyyy"></span> ' +
+    '<button data-hsave="' + esc(s.key) + '">Save hold</button> ' +
+    '<button class="ghost" data-hswap>exact dates</button></span></dd>');
 
   const monthLines = s.months.map((mo) => {
     const ms = s.schedules[mo.y + "-" + mo.m];
@@ -1962,16 +1995,39 @@ function renderTable() {
       if (form) form.hidden = !form.hidden;
     };
   });
+  wrap.querySelectorAll("button[data-hswap]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const form = b.closest("span[data-holdform]");
+      const monthsMode = form.querySelector('span[data-hmode="months"]');
+      const datesMode = form.querySelector('span[data-hmode="dates"]');
+      const toDates = datesMode.hidden;
+      monthsMode.hidden = toDates;
+      datesMode.hidden = !toDates;
+      b.textContent = toDates ? "whole months" : "exact dates";
+    };
+  });
   wrap.querySelectorAll("button[data-hsave]").forEach((b) => {
     b.onclick = async (e) => {
       e.stopPropagation();
       const form = b.closest("span[data-holdform]");
-      const from = parseDate(form.querySelector("input[data-hfrom]").value);
-      const to = parseDate(form.querySelector("input[data-hto]").value);
+      let from, to;
+      if (form.querySelector('span[data-hmode="months"]').hidden) {
+        from = parseDate(form.querySelector("input[data-hfrom]").value);
+        to = parseDate(form.querySelector("input[data-hto]").value);
+      } else {
+        const [fy, fm] = form.querySelector("select[data-hmfrom]").value.split("-").map(Number);
+        const [ty, tm] = form.querySelector("select[data-hmto]").value.split("-").map(Number);
+        from = mkDate(fy, fm, 1);
+        to = mkDate(ty, tm, lastDayOf(ty, tm));
+      }
       if (!saveHoldDates(b.dataset.hsave, from, to)) return;
       await saveOverrides();
       rerun();
     };
+  });
+  wrap.querySelectorAll("select[data-hmfrom], select[data-hmto]").forEach((sel) => {
+    sel.onclick = (e) => e.stopPropagation();
   });
   // Typing in the hold inputs must not toggle the row open and shut.
   wrap.querySelectorAll("input.holdDate").forEach((inp) => {
