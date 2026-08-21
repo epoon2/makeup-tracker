@@ -119,6 +119,7 @@
                white-space: pre-wrap; margin-top: 8px; }
   input.holdDate { width: 100px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
                    font-size: 13px; font-family: inherit; }
+  button.tiny { padding: 0 5px; font-size: 12px; line-height: 1.5; }
   .qhead { margin: 14px 2px 2px; font-size: 12px; font-weight: 700; letter-spacing: .04em;
            text-transform: uppercase; color: var(--muted); }
   .q { border-top: 1px solid #eef1f5; padding: 12px 2px; }
@@ -1923,18 +1924,25 @@ function detailFor(s) {
     (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
 
   // Every student can take a hold, not only the ones the queue asked about.
+  // Each one can be taken back off again: holds are the answer most often
+  // given in haste, and a wrong one quietly changes what the student owes.
   const heldBits = [];
   if (s.over) {
-    for (const h of s.over.holds || []) {
-      heldBits.push(h.until
+    (s.over.holds || []).forEach((h, i) => {
+      const label = h.until
         ? monthLabel(h.start) + " through " + monthLabel(prevMonthKey(h.until))
-        : monthLabel(h.start) + " onward");
-    }
-    for (const h of s.over.holdDates || []) heldBits.push(h.from + " to " + h.to);
+        : monthLabel(h.start) + " onward";
+      heldBits.push(esc(label) + ' <button class="ghost tiny" data-delhold="' + esc(s.key) +
+                    '" data-delkind="months" data-delidx="' + i + '" title="Remove this hold">&times;</button>');
+    });
+    (s.over.holdDates || []).forEach((h, i) => {
+      heldBits.push(esc(h.from + " to " + h.to) + ' <button class="ghost tiny" data-delhold="' + esc(s.key) +
+                    '" data-delkind="dates" data-delidx="' + i + '" title="Remove this hold">&times;</button>');
+    });
   }
   const monthOpts = report.span.map(([y, m]) =>
     '<option value="' + monthKey(y, m) + '">' + monthLabel(monthKey(y, m)) + "</option>").join("");
-  rows.push("<dt>Holds entered</dt><dd>" + (heldBits.length ? esc(heldBits.join(" · ")) : '<span style="color:var(--muted)">none</span>') +
+  rows.push("<dt>Holds entered</dt><dd>" + (heldBits.length ? heldBits.join(" · ") : '<span style="color:var(--muted)">none</span>') +
     ' <button class="ghost small" data-addhold="' + esc(s.key) + '">Add a hold</button>' +
     '<span class="days" data-holdform="' + esc(s.key) + '" hidden> ' +
     '<span data-hmode="months">from <select data-hmfrom>' + monthOpts + '</select> ' +
@@ -1943,6 +1951,26 @@ function detailFor(s) {
     'through <input class="holdDate" data-hto placeholder="m/d/yyyy"></span> ' +
     '<button data-hsave="' + esc(s.key) + '">Save hold</button> ' +
     '<button class="ghost" data-hswap>exact dates</button></span></dd>');
+
+  // What has been answered for this student, and a way to take it all back.
+  // Schedules change and clicks slip; nothing here should be permanent.
+  if (s.over) {
+    const saved = [];
+    const nHolds = (s.over.holds || []).length + (s.over.holdDates || []).length;
+    if (nHolds) saved.push(nHolds + " hold(s)");
+    if (s.over.weekdays) saved.push("schedule set by hand");
+    if (s.over.planReading) saved.push("plan read as " + s.over.planReading);
+    if ((s.over.charged || []).length) saved.push((s.over.charged || []).length + " month(s) charged");
+    if ((s.over.notEnrolled || []).length) saved.push((s.over.notEnrolled || []).length + " month(s) not enrolled");
+    const adj = Object.keys(s.over.hourAdjust || {}).length;
+    if (adj) saved.push(adj + " month(s) with hour corrections");
+    if ((s.over.auditChecked || []).length) saved.push((s.over.auditChecked || []).length + " audit answer(s)");
+    if ((s.over.answered || []).length) saved.push((s.over.answered || []).length + " question(s) answered");
+    if (saved.length) {
+      rows.push("<dt>Saved answers</dt><dd>" + esc(saved.join(" · ")) +
+        ' <button class="ghost small" data-resetstudent="' + esc(s.key) + '">Clear and ask again</button></dd>');
+    }
+  }
 
   const monthLines = s.months.map((mo) => {
     const ms = s.schedules[mo.y + "-" + mo.m];
@@ -2081,6 +2109,28 @@ function renderTable() {
   });
   wrap.querySelectorAll("select[data-hmfrom], select[data-hmto]").forEach((sel) => {
     sel.onclick = (e) => e.stopPropagation();
+  });
+  wrap.querySelectorAll("button[data-delhold]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      const rec = ovFor(b.dataset.delhold, false);
+      if (!rec) return;
+      const list = b.dataset.delkind === "months" ? rec.holds : rec.holdDates;
+      list.splice(+b.dataset.delidx, 1);
+      await saveOverrides();
+      rerun();
+    };
+  });
+  wrap.querySelectorAll("button[data-resetstudent]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      // Delete the whole record rather than unpicking it: the point is to get
+      // back to what the exports say and be asked from scratch.
+      delete overrides.students[b.dataset.resetstudent];
+      await saveOverrides();
+      rerun();
+      say("Cleared saved answers for that student; they will be asked about again.");
+    };
   });
   // Typing in the hold inputs must not toggle the row open and shut.
   wrap.querySelectorAll("input.holdDate").forEach((inp) => {
