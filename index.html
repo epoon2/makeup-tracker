@@ -910,13 +910,14 @@ const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return 
 function ovFor(key, create) {
   let rec = overrides.students[key];
   if (!rec && create) {
-    rec = overrides.students[key] = { holds: [], holdDates: [], planHours: {}, hourAdjust: {}, notEnrolled: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [], auditChecked: [] };
+    rec = overrides.students[key] = { holds: [], holdDates: [], planHours: {}, hourAdjust: {}, notEnrolled: [], charged: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [], auditChecked: [] };
   }
   if (rec) {
     // Backfill fields on records saved by an older version of the page.
     rec.holdDates = rec.holdDates || [];
     rec.hourAdjust = rec.hourAdjust || {};
     rec.auditChecked = rec.auditChecked || [];
+    rec.charged = rec.charged || [];
   }
   return rec || null;
 }
@@ -955,7 +956,7 @@ async function saveOverrides() {
    Per-month accounting
 --------------------------------------------------------------------------- */
 
-function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN, over, holdRanges, hourAdjust) {
+function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN, over, holdRanges, hourAdjust, forceCharge) {
   const first = mkDate(y, m, 1).n;
   const last = mkDate(y, m, lastDayOf(y, m)).n;
   const today = fromDayNumber(todayN);
@@ -995,7 +996,7 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   const out = {
     y, m, required, attended, markerHours, onHold, isCurrent, proratedFrom,
     label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
-    scheduled: [], missed: [], absentWholeMonth: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
+    scheduled: [], missed: [], absentWholeMonth: false, assumedHold: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
     // The review queue and the ledger both ask "how short was this month".
     // Computed on read so the hold/not-enrolled branches, which zero out
     // `required` after this literal is built, stay consistent with it.
@@ -1082,8 +1083,20 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
       out.required = 0;
       out.note = "not enrolled during " + out.label + " (" + verdict.detail + "), no makeups owed";
     } else if (verdict.basis === UNVERIFIABLE) {
-      out.note = out.required + " hrs because they were not here in " + out.label +
-                 "; enrollment that month could not be confirmed (" + verdict.detail + ")";
+      if (forceCharge) {
+        out.note = out.required + " hrs because they were enrolled and absent all of " +
+                   out.label + ", confirmed by hand";
+      } else {
+        // A whole month with nothing recorded is assumed to be a hold: at this centre
+        // that is what an empty month almost always is, and charging a full plan for a
+        // month nobody attended produces makeup hours nobody will ever book. The review
+        // queue still asks, so it can be charged.
+        out.assumedHold = true;
+        out.onHold = true;
+        out.required = 0;
+        out.note = "nothing recorded for all of " + out.label + ", so it is assumed to be a hold " +
+                   "and nothing is owed for it; confirm in the queue if they were enrolled and simply absent";
+      }
     } else {
       out.note = "enrolled but absent all of " + out.label;
     }
@@ -1335,7 +1348,8 @@ function buildReport(attendance, roster, todayN) {
       }
       schedules[y + "-" + m] = s;
       return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN, over, holdRanges,
-                        over && over.hourAdjust ? over.hourAdjust[monthKey(y, m)] || 0 : 0);
+                        over && over.hourAdjust ? over.hourAdjust[monthKey(y, m)] || 0 : 0,
+                        !!(over && (over.charged || []).includes(monthKey(y, m))));
     });
     // The student-level schedule is the one that applied most recently, since that is what
     // someone reading the row wants. Earlier months keep their own.
@@ -1353,8 +1367,10 @@ function buildReport(attendance, roster, todayN) {
     if (rec && rec.ambiguous) flags.push("more than one roster record under this name");
     if (!rec) flags.push("no roster record matched");
     for (const mo of months) {
-      if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE) {
-        flags.push(mo.required + " hrs granted for " + mo.label + "; enrollment that month unconfirmed");
+      if (mo.assumedHold) {
+        flags.push(mo.label + " assumed to be a hold; nothing owed for it");
+      } else if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE) {
+        flags.push(mo.required + " hrs charged for " + mo.label + "; enrolled and absent, confirmed by hand");
       }
     }
     const audit = auditVisits(list, schedule.sessionHours, todayN);
@@ -1463,18 +1479,20 @@ function buildQuestions(rep) {
         cat: likelyHold ? "hold" : "absent",
         key: s.key, id, who: s.display,
         ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
-             "Right now that is charged as " + mo.required + " makeup hrs. Which was it?" +
+             "That is assumed to be a hold, so nothing is owed for it. Is that right?" +
              (offerNotEnrolled
                ? " On hold also covers every month after this one until an export shows them enrolled again; not enrolled applies to " + mo.label + " on its own."
                : ""),
         options: [
-          { label: "On hold from " + monthLabel(mk) + " (still on hold)", apply: () => {
+          { label: "Yes, on hold", suggest: true, apply: () => {} },
+          { label: "Still on hold now", apply: () => {
               ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
-          { label: "On hold — pick the months", suggest: likelyHold, datesPicker: true,
+          { label: "On hold — pick the months", datesPicker: true,
             defaultMonth: mk,
             defaultFrom: fmt(fromDayNumber(mkDate(mo.y, mo.m, 1).n)),
             defaultTo: fmt(fromDayNumber(mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n)) },
-          { label: "Enrolled, owes " + mo.required + " hrs", suggest: !likelyHold, apply: () => {} },
+          { label: "No — enrolled and absent, charge " + s.plan + " hrs", apply: () => {
+              ovFor(s.key, true).charged.push(mk); } },
         ].concat(offerNotEnrolled
           ? [{ label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
                 ovFor(s.key, true).notEnrolled.push(mk); } }]
@@ -1830,13 +1848,13 @@ function renderCards() {
   const owedHours = report.owing.reduce((s, x) => s + x.owed, 0);
   const bookHours = report.behind.reduce((s, x) => s + x.toSchedule, 0);
   const flagged = report.students.reduce((s, x) =>
-    s + x.months.filter((mo) => mo.absentWholeMonth && mo.basis === UNVERIFIABLE).reduce((a, mo) => a + mo.required, 0), 0);
+    s + x.months.filter((mo) => mo.assumedHold).length, 0);
   el("cards").innerHTML =
     card(report.owing.length, "owed makeup hours", owedHours + " hrs from past months") +
     card(report.behind.length, "to book this month", bookHours + " hrs short of the plan") +
     card(report.held.length, "on hold", "debt frozen") +
     card(report.neverAttended.length, "enrolled, never attended", "no visits in this export") +
-    card(flagged, "hrs need checking", "whole-month absences we could not confirm");
+    card(flagged, "months assumed on hold", "empty months, nothing owed unless you say so");
 }
 
 // All students first and selected by default: opening on a filtered list makes the tool
@@ -2541,6 +2559,18 @@ function selfCheck() {
   const adjUp = buildMonth(2026, 6, [], monWed, 8, null, D(2026, 9, 10).n, D(2026, 9, 1).n, null, [], 1);
   is("a positive adjustment lands a moved hour", adjUp.attended, 1);
 
+  // --- an empty month is assumed to be a hold ------------------------------------------
+  const bracketing = [visit(2026, 6, 2, 1), visit(2026, 8, 4, 1)];
+  const empty = buildMonth(2026, 7, bracketing, monWed, 8,
+                           { start: D(2024, 1, 1), end: null, lastAttendance: D(2026, 8, 4), onHold: false },
+                           D(2026, 9, 10).n, D(2026, 9, 1).n, null, [], 0, false);
+  is("an empty bracketed month is assumed held", [empty.assumedHold, empty.required, empty.onHold], [true, 0, true]);
+  is("an assumed hold opens no debt", settle([empty]).owed, 0);
+  const charged = buildMonth(2026, 7, bracketing, monWed, 8,
+                             { start: D(2024, 1, 1), end: null, lastAttendance: D(2026, 8, 4), onHold: false },
+                             D(2026, 9, 10).n, D(2026, 9, 1).n, null, [], 0, true);
+  is("confirming enrolled-and-absent charges the plan", [charged.assumedHold, charged.required], [false, 8]);
+
   return { ran, fails };
 }
 
@@ -2705,6 +2735,7 @@ el("answerPicker").addEventListener("change", async () => {
         for (const h of rec.holds || []) if (!seen.has(h.start + ">" + (h.until || ""))) mine.holds.push(h);
         Object.assign(mine.planHours, rec.planHours || {});
         for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
+        for (const m of rec.charged || []) if (!mine.charged.includes(m)) mine.charged.push(m);
         if (rec.weekdays) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
         if (rec.planReading) mine.planReading = rec.planReading;
         mine.holdDates = mine.holdDates || [];

@@ -120,3 +120,25 @@ def test_audit_flags_the_odd_entries_and_nothing_else():
     assert audit_month("t", "July 2026", 8, 12, 4, False) is None   # markers explain it
     assert audit_month("t", "July 2026", 8, 10, 0, False) is None   # under the threshold
     assert audit_month("t", "July 2026", 0, 12, 0, True) is None    # held month
+
+
+def test_an_empty_bracketed_month_is_assumed_to_be_a_hold():
+    import datetime as dt
+    from reference.loaders import RosterRecord, Visit
+    from reference.months import build_month
+    from reference.schedule import Schedule
+
+    rec = RosterRecord("t", "1", "Enrolled", dt.date(2024, 1, 1), None, dt.date(2026, 8, 4))
+    visits = [Visit("t", dt.date(2026, 6, 2), 1, 8), Visit("t", dt.date(2026, 8, 4), 1, 8)]
+    sched = Schedule((0, 2), 1, True, "")
+
+    assumed = build_month(2026, 7, visits, sched, 8, rec, dt.date(2026, 9, 10), dt.date(2026, 9, 1))
+    assert assumed.assumed_hold is True
+    assert assumed.required == 0
+    assert assumed.on_hold is True
+    assert assumed.shortfall == 0
+
+    charged = build_month(2026, 7, visits, sched, 8, rec, dt.date(2026, 9, 10), dt.date(2026, 9, 1),
+                          force_charge=True)
+    assert charged.assumed_hold is False
+    assert charged.required == 8

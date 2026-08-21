@@ -230,6 +230,7 @@ def build(loaded: Loaded, today: dt.date | None = None,
                     on_hold=over.held(mk) if over else None,
                     plan_override=(over.plan_hours.get(mk) if over else None),
                     force_not_enrolled=bool(over and mk in over.not_enrolled),
+                    force_charge=bool(over and mk in over.charged),
                     hold_ranges=hold_ranges,
                     hour_adjust=(over.hour_adjust.get(mk, 0) if over else 0),
                 )
@@ -264,9 +265,11 @@ def build(loaded: Loaded, today: dt.date | None = None,
         if record is None:
             report.flags.append("no roster record matched")
         for month in months:
-            if month.absent_whole_month and month.absence_basis == UNVERIFIABLE:
+            if month.assumed_hold:
+                report.flags.append(f"{month.label} assumed to be a hold; nothing owed for it")
+            elif month.absent_whole_month and month.absence_basis == UNVERIFIABLE:
                 report.flags.append(
-                    f"{month.required} hrs granted for {month.label}; enrollment that month unconfirmed"
+                    f"{month.required} hrs charged for {month.label}; enrolled and absent, confirmed by hand"
                 )
         report.audit = audit_visits(visits, schedule.session_hours, today)
         for month in months:

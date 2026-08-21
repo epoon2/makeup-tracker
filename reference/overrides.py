@@ -59,6 +59,9 @@ class StudentOverrides:
     holds: list[Hold] = field(default_factory=list)
     plan_hours: dict[str, int] = field(default_factory=dict)
     not_enrolled: set[str] = field(default_factory=set)
+    # Months confirmed as enrolled-but-absent, so the full plan is charged.
+    # Without this a fully empty month is assumed to be a hold.
+    charged: set[str] = field(default_factory=set)
     weekdays: tuple[int, ...] | None = None
     session_hours: int | None = None
     # 'hours' or 'sessions': what the plan number means for this student, pinned by a
@@ -117,13 +120,15 @@ class Overrides:
         out: dict = {"version": 1, "students": {}}
         for key, record in self.students.items():
             if not (record.holds or record.plan_hours or record.not_enrolled
-                    or record.weekdays or record.plan_reading or record.hold_dates
-                    or record.hour_adjust or record.audit_checked or record.note):
+                    or record.charged or record.weekdays or record.plan_reading
+                    or record.hold_dates or record.hour_adjust or record.audit_checked
+                    or record.note):
                 continue
             out["students"][key] = {
                 "holds": [{"start": h.start, "until": h.until, "source": h.source} for h in record.holds],
                 "planHours": record.plan_hours,
                 "notEnrolled": sorted(record.not_enrolled),
+                "charged": sorted(record.charged),
                 "weekdays": list(record.weekdays) if record.weekdays else None,
                 "sessionHours": record.session_hours,
                 "planReading": record.plan_reading,
@@ -145,6 +150,7 @@ class Overrides:
                 record.holds.append(Hold(hold["start"], hold.get("until"), hold.get("source", "entered")))
             record.plan_hours = {k: int(v) for k, v in (raw.get("planHours") or {}).items()}
             record.not_enrolled = set(raw.get("notEnrolled") or [])
+            record.charged = set(raw.get("charged") or [])
             weekdays = raw.get("weekdays")
             record.weekdays = tuple(weekdays) if weekdays else None
             record.session_hours = raw.get("sessionHours")
