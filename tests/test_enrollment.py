@@ -142,3 +142,27 @@ def test_an_empty_bracketed_month_is_assumed_to_be_a_hold():
                           force_charge=True)
     assert charged.assumed_hold is False
     assert charged.required == 8
+
+
+def test_a_moved_week_is_not_a_missed_week():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.months import build_month
+    from reference.schedule import Schedule
+
+    tue_thu = Schedule((1, 3), 1, True, "")
+    # Scheduled Tue 4 and Thu 6 Aug; they came Mon 3 and Wed 5 instead.
+    moved = [Visit("t", dt.date(2026, 8, 3), 1, 8), Visit("t", dt.date(2026, 8, 5), 1, 8)]
+    month = build_month(2026, 8, moved, tue_thu, 8, None, dt.date(2026, 8, 10), dt.date(2026, 8, 9))
+    assert month.missed_dates == []
+
+    # Came only once that week: one session short, and the later day is the one kept.
+    half = build_month(2026, 8, [Visit("t", dt.date(2026, 8, 3), 1, 8)], tue_thu, 8, None,
+                       dt.date(2026, 8, 10), dt.date(2026, 8, 9))
+    assert half.missed_dates == [dt.date(2026, 8, 6)]
+
+    # A week with nothing at all still counts both scheduled days.
+    empty = build_month(2026, 8, [Visit("t", dt.date(2026, 8, 11), 1, 8),
+                                  Visit("t", dt.date(2026, 8, 13), 1, 8)], tue_thu, 8, None,
+                        dt.date(2026, 8, 17), dt.date(2026, 8, 16))
+    assert len(empty.missed_dates) == 2

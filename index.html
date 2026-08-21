@@ -1012,6 +1012,35 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   out.scheduled = scheduledDates(schedule, Math.max(first, activeFrom), Math.min(last, activeTo));
   out.missed = out.scheduled.filter((n) => n <= horizon && !attendedDays.has(n));
 
+  // Net each week before calling anything missed. Schedules drift week to week: a
+  // Tue/Thu student who comes Monday and Wednesday one week has not missed anything,
+  // they moved. Judging exact weekdays turns every such week into two phantom misses,
+  // which is the single largest source of wrong missed dates in a real export. So a
+  // week is short only by how many fewer sessions were attended than scheduled, and
+  // the earliest scheduled days are the ones forgiven, keeping the report's missed
+  // dates on the days most likely still to be made up.
+  if (out.missed.length) {
+    const attendedPerWeek = new Map();
+    for (const v of inMonth) {
+      const w = isoWeekKey(v.date.n);
+      attendedPerWeek.set(w, (attendedPerWeek.get(w) || 0) + 1);
+    }
+    const missedByWeek = new Map();
+    for (const n of out.missed) {
+      const w = isoWeekKey(n);
+      if (!missedByWeek.has(w)) missedByWeek.set(w, []);
+      missedByWeek.get(w).push(n);
+    }
+    const kept = [];
+    for (const [week, days] of missedByWeek) {
+      const scheduledThatWeek = out.scheduled.filter((n) => n <= horizon && isoWeekKey(n) === week).length;
+      const came = attendedPerWeek.get(week) || 0;
+      const forgive = Math.max(0, Math.min(days.length, came - (scheduledThatWeek - days.length)));
+      kept.push(...days.slice().sort((a, b) => a - b).slice(forgive));
+    }
+    out.missed = kept.sort((a, b) => a - b);
+  }
+
   // Exact hold periods (typed off the Radius hold screen). A period covering
   // every scheduled day of the month behaves as a whole-month hold; a partial
   // one waives the scheduled sessions it covers and prorates the requirement,
@@ -2570,6 +2599,21 @@ function selfCheck() {
                              { start: D(2024, 1, 1), end: null, lastAttendance: D(2026, 8, 4), onHold: false },
                              D(2026, 9, 10).n, D(2026, 9, 1).n, null, [], 0, true);
   is("confirming enrolled-and-absent charges the plan", [charged.assumedHold, charged.required], [false, 8]);
+
+  // --- week-level netting: a moved session is not a missed one --------------------------
+  const tueThu = { weekdays: [1, 3], sessionHours: 1, confident: true, reason: "" };
+  // Week of Aug 3: scheduled Tue 4 and Thu 6, but they came Mon 3 and Wed 5 instead.
+  const movedWeek = [visit(2026, 8, 3, 1), visit(2026, 8, 5, 1)];
+  const movedMonth = buildMonth(2026, 8, movedWeek, tueThu, 8, null, D(2026, 8, 10).n, D(2026, 8, 9).n, null, [], 0, false);
+  is("a fully moved week is not missed", movedMonth.missed.length, 0);
+  // Same week, but they only came once: the week is one session short.
+  const halfWeek = buildMonth(2026, 8, [visit(2026, 8, 3, 1)], tueThu, 8, null, D(2026, 8, 10).n, D(2026, 8, 9).n, null, [], 0, false);
+  is("a week short by one keeps one missed date", halfWeek.missed.length, 1);
+  is("the later scheduled day is the one kept", halfWeek.missed[0], D(2026, 8, 6).n);
+  // A week with nothing at all still counts both days.
+  const emptyWeek = buildMonth(2026, 8, [visit(2026, 8, 11, 1), visit(2026, 8, 13, 1)], tueThu, 8, null,
+                               D(2026, 8, 17).n, D(2026, 8, 16).n, null, [], 0, false);
+  is("a week with no attendance keeps its missed days", emptyWeek.missed.length, 2);
 
   return { ran, fails };
 }

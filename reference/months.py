@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import collections
 import math
 import datetime as dt
 from dataclasses import dataclass, field
@@ -155,6 +156,30 @@ def build_month(
         horizon = min(horizon, data_through)
     result.scheduled_dates = scheduled_dates(schedule, max(first, active_from), min(last, active_to))
     result.missed_dates = [d for d in result.scheduled_dates if d <= horizon and d not in attended_days]
+
+    # Net each week before calling anything missed. Schedules drift week to week: a
+    # Tue/Thu student who comes Monday and Wednesday one week has not missed anything,
+    # they moved. Judging exact weekdays turns every such week into two phantom misses,
+    # which is the single largest source of wrong missed dates in a real export. So a
+    # week is short only by how many fewer sessions were attended than scheduled, and
+    # the earliest scheduled days are the ones forgiven, keeping the report's missed
+    # dates on the days most likely still to be made up.
+    if result.missed_dates:
+        attended_per_week: dict = collections.Counter()
+        for v in in_month:
+            attended_per_week[v.date.isocalendar()[:2]] += 1
+        missed_by_week: dict = collections.defaultdict(list)
+        for day in result.missed_dates:
+            missed_by_week[day.isocalendar()[:2]].append(day)
+        kept: list[dt.date] = []
+        for week, days in missed_by_week.items():
+            scheduled_that_week = sum(
+                1 for d in result.scheduled_dates if d.isocalendar()[:2] == week and d <= horizon
+            )
+            came = attended_per_week.get(week, 0)
+            forgive = max(0, min(len(days), came - (scheduled_that_week - len(days))))
+            kept.extend(sorted(days)[forgive:])
+        result.missed_dates = sorted(kept)
 
     # Exact hold periods (typed off the Radius hold screen). A period covering
     # every scheduled day of the month behaves as a whole-month hold; a partial
