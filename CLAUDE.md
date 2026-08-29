@@ -2,7 +2,7 @@
 
 Written for whoever picks this up next, including a Claude session starting cold. Read
 this before changing anything; it exists so you do not have to re-derive the rules or
-re-ask Jorge questions he has already answered.
+re-ask Ethan questions he has already answered.
 
 ---
 
@@ -39,16 +39,15 @@ git log --all --pretty=format: --name-only | sort -u | grep -Ei 'testdata|\.xlsx
 Empty output is the pass. A file deleted in a later commit is still in the history and
 still public the moment you push.
 
-**2. Commits are authored `epoon2 <ethanp0811@gmail.com>` and committed by Jorge.** This
-is deliberate and settled. Author is whose work it is, committer is whose hands applied
-it; both statements are true as written and GitHub attributes by author.
+**2. Commits are authored and committed as `epoon2 <ethanp0811@gmail.com>`.** One name in
+the history, both fields, every commit. This is deliberate and settled.
 
 ```bash
-GIT_AUTHOR_NAME=epoon2 GIT_AUTHOR_EMAIL=ethanp0811@gmail.com git commit -m "..."
+git config user.name epoon2
+git config user.email ethanp0811@gmail.com
 ```
 
-with `user.name`/`user.email` set to Jorge. Verify with
-`git log --pretty="%h A:%an <%ae> C:%cn"`.
+Verify with `git log --pretty="%h A:%an <%ae> C:%cn <%ce>"`.
 
 **3. The page must never be able to send anything anywhere.** A Content Security Policy
 with `connect-src 'none'` sits in both `netlify.toml` and a `<meta>` tag in `index.html`,
@@ -89,9 +88,9 @@ The parity script is the strongest check available: it compares the browser engi
 Python reference field by field across all 380 students. It must report **0 differing**.
 Playwright needs a browser; `PLAYWRIGHT_BROWSERS_PATH` is already set in the Cowork sandbox.
 
-**Jorge's Windows machine has git but no node and no npm.** No test runner, no linter, no
-dev server. That is why the self-check is in the page. Never hand him a workflow that
-needs npm.
+**The Windows machine this deploys from has git but no node and no npm.** No test runner,
+no linter, no dev server. That is why the self-check is in the page. Never hand over a
+workflow that needs npm.
 
 ---
 
@@ -133,7 +132,7 @@ system working, not a nuisance.
 
 ---
 
-## The rules, as Jorge set them. Do not re-ask.
+## The rules, as Ethan set them. Do not re-ask.
 
 **Monthly requirement** is the `Sessions Per Month` value on the attendance rows, in
 **hours**: 4, 8 or 12. A 120-minute visit is 2 hours.
@@ -161,8 +160,8 @@ October showing them enrolled: August and September held, October not.
 `Enrollment Status`, which describes today and cannot testify about a past month.
 Attendance can only be recorded for an enrolled student, so a visit proves enrolment on
 that date. Nothing after means they left; nothing before means they had not started.
-**Bracketed on both sides is assumed to be a HOLD** (Jorge, 20 Aug 2026: "for students
-that have no attendances for a whole month, just assume they were on hold"). Nothing is
+**Bracketed on both sides is assumed to be a HOLD** (decided 20 Aug 2026: a student with
+no attendances for a whole month is assumed to have been on hold). Nothing is
 owed, the queue still asks, and a `charged` override charges the full plan instead. This
 replaced the old charge-and-flag behaviour and moved the real-data totals from
 160 students / 780 hrs owed to 100 / 301, with 62 months assumed held.
@@ -185,7 +184,7 @@ suggest re-exporting from further back.
 **"Enrolled, never attended" means `Enrollment Status = Enrolled` only.** New and
 Pre-Enrolled were tried and produced mostly false alarms.
 
-**A 12:00 AM entry is a makeup-redemption marker** (confirmed by Jorge 20 Aug 2026: real
+**A 12:00 AM entry is a makeup-redemption marker** (confirmed 20 Aug 2026: real
 sessions run only 1:30–7:30 pm, and 12 AM is never legitimate). Marker hours credit the
 month they are dated in but are excluded from schedule inference and from plan-reading
 evidence. The centre's logging convention is one logged hour = one delivered hour: a
@@ -194,7 +193,7 @@ real time plus a 1-hour 12 AM marker dated to the month being credited, ideally 
 exact missed date. If the export carries no start times at all, the tool says so in a
 warning and markers simply cannot be recognised.
 
-**A plan number can mean hours or sessions** (Jorge, 20 Aug 2026: the 4/month students
+**A plan number can mean hours or sessions** (confirmed 20 Aug 2026: the 4/month students
 with 2-hour sessions cannot be moved to 8/month in Radius, so the tool must infer).
 `resolvePlan`/`resolve_plan` compares both readings against the median of completed-month
 real hours, needs at least two months of evidence to decide, defaults to hours when
@@ -203,18 +202,18 @@ uncertain, asks in the review queue, and honours a pinned `planReading` override
 **Hours already attended in the current month pay old debt immediately** — actual hours,
 never the projection, and the current month still never opens a debt of its own.
 
-**Makeups are never honored beyond the two-month grace** (confirmed by Jorge 20 Aug 2026).
+**Makeups are never honored beyond the two-month grace** (confirmed 20 Aug 2026).
 The grace dial stays at 2.
 
-**Radius has a per-student hold screen with exact start and end dates** (Jorge found it
+**Radius has a per-student hold screen with exact start and end dates** (found
 20 Aug 2026; every observed hold is whole calendar months). The queue's hold questions
 accept a month range for this reason. **If that screen can be exported, build the
 importer**: a third optional drop zone that turns hold periods into closed hold
 overrides and removes hold questions from the queue entirely. Waiting on a sample
-export from Jorge to learn its columns; do not guess the format.
+export to learn its columns; do not guess the format.
 
-**The audit panel asks; answers correct the numbers** (changed 20 Aug 2026 at Jorge's
-direction from the earlier points-only design). Answers are stored as `auditChecked`
+**The audit panel asks; answers correct the numbers** (changed 20 Aug 2026
+from the earlier points-only design). Answers are stored as `auditChecked`
 ids plus `hourAdjust` per-month deltas in overrides; the deltas are applied to a
 month's attended hours in BOTH engines (`hour_adjust` in `reference/months.py`).
 Thresholds stay conservative (`EXCESS_WORTH_ASKING = 3`); a list with false alarms
@@ -228,14 +227,15 @@ hold export (verified in the live site 20 Aug 2026: Reports has none, the Studen
 Management Excel export lacks hold dates); holds are read per student from
 Students -> Student Management -> student -> Enrollments -> Holds, which is why the
 tool takes typed dates. The internal JSON endpoints (`/Student/Enrollment_Read/{id}`,
-`/Student/Hold_Read`) exist if a fetcher is ever wanted; Jorge knows the tradeoff.
+`/Student/Hold_Read`) exist if a fetcher is ever wanted; the tradeoff was weighed and
+declined for now.
 
 ---
 
 ## Settled decisions. Do not reopen.
 
 - **Current month stays schedule-based.** Pace-based projection was offered with numbers
-  and rejected; Jorge wants the weekly schedule inferred as well as possible instead.
+  and rejected; the weekly schedule is inferred as well as possible instead.
 - **Never commit real exports.** Not once, not temporarily.
 - **No AI call from inside the page.** It is offline by design and that is the property
   that keeps the data local.
