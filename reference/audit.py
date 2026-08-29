@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from .loaders import Visit
 
-# The 1:30-7:30 pm window is the WEEKDAY window (Jorge, 20 Aug 2026). The real export
+# The 1:30-7:30 pm window is the WEEKDAY window (confirmed 20 Aug 2026). The real export
 # shows the centre runs weekend mornings (418 Saturday and 14 Sunday morning arrivals in
 # Jul-Aug 2026), and Arrival Time is a check-in clock, so sessions routinely end a few
 # minutes past 7:30. The rule that survives contact with the data: weekday starts before

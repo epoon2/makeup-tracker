@@ -38,7 +38,7 @@ Review queue: **223 questions** with no answers loaded, grouped by kind.
 
 ## Why these differ from the earlier 8/20 baseline
 
-Three rule changes on 20 Aug 2026, all at Jorge's direction: an empty month is now
+Three rule changes on 20 Aug 2026: an empty month is now
 assumed to be a hold rather than charged (owed drops 780 -> 301 hrs, 62 months assumed
 held), missed sessions are netted per week so a moved session is not a missed one
 (1859 -> 1657), and the two hour columns were renamed. The audit total is unchanged
