@@ -174,6 +174,11 @@ export (1859 -> 1657). Do not revert to exact-weekday judging.
 **Nothing a person answers is permanent.** Per-hold remove buttons plus a per-student
 "Clear and ask again" that deletes the whole override record. Assume answers will be
 wrong sometimes: misclicks and changing schedules are normal, not exceptional.
+Since 31 Aug 2026 the queue also re-asks on its own when the newest export moves
+against a saved answer — a month answered as a hold that now shows real (non-marker)
+hours, or a confirmed schedule that the latest complete month confidently contradicts.
+The old answer stays in force until re-answered, and re-ask question ids carry the
+evidence (month, hours) so a later change asks again.
 
 **Warnings carry their entries.** A warning may be a plain string or
 `{ text, items }`; the banner area renders one collapsible box with a dropdown per

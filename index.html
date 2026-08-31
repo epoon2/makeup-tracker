@@ -1477,7 +1477,8 @@ function buildReport(attendance, roster, todayN) {
     }
     const onSched = new Set(schedule.weekdays);
     const attendedDates = list
-      .map((v) => ({ n: v.date.n, hours: v.hours, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
+      .map((v) => ({ n: v.date.n, hours: v.hours, marker: !!v.marker,
+                     onSchedule: onSched.has(weekdayOf(v.date.n)) }))
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
@@ -1681,11 +1682,83 @@ function buildQuestions(rep) {
         });
       }
     }
+
+    // 4. Saved answers the data has since moved against. The answer stays
+    // in force until it is re-answered; the flag exists because an answer
+    // can be a misclick, and because next month can genuinely change the
+    // truth.
+
+    // 4a. A month held by an answer that now shows real attendance. Hours
+    // attended while held are legitimate - they burn off older debt - so
+    // keeping the hold is the suggested answer. The question exists
+    // because the hold was premised on a month that read as empty when it
+    // was answered. Marker hours are excluded: a makeup redeemed into a
+    // held month is exactly what redemption looks like.
+    for (const mo of s.months) {
+      if (mo.isCurrent || !mo.onHold) continue;
+      const realHrs = mo.attended - (mo.markerHours || 0);
+      if (realHrs <= 0) continue;
+      const mk = monthKey(mo.y, mo.m);
+      if (!(s.over && s.over.holds.some((h) => h.start === mk))) continue;
+      const id = "heldbusy:" + mk + ":" + realHrs;
+      if (wasAnswered(s.key, id)) continue;
+      out.push({
+        cat: "recheck", key: s.key, id, who: s.display,
+        ask: mo.label + " was answered as a hold when it read as empty, but the newest export shows " +
+             realHrs + " hr(s) attended in it. A held month owes nothing; those hours pay down older debt. Keep the hold?",
+        options: [
+          { label: "Keep the hold", suggest: true, apply: () => {} },
+          { label: "Not a hold — count " + mo.label + " normally", apply: () => {
+              const r = ovFor(s.key, true);
+              r.holds = r.holds.filter((h) => h.start !== mk);
+              r.notEnrolled = r.notEnrolled.filter((k) => k !== mk);
+            } },
+        ],
+      });
+    }
+
+    // 4b. A hand-confirmed schedule that the newest complete month
+    // confidently contradicts. The id carries the month, so a LATER
+    // divergent month asks again even after this one is answered -
+    // schedules genuinely change.
+    if (s.over && s.over.weekdays && s.over.weekdays.length) {
+      const complete = s.months.filter((mo) => !mo.isCurrent && !mo.onHold);
+      const mo = complete[complete.length - 1];
+      if (mo && mo.attended - (mo.markerHours || 0) > 0) {
+        const raw = s.attendedDates
+          .filter((v) => !v.marker)
+          .map((v) => ({ date: { n: v.n }, hours: v.hours }));
+        const seen = inferScheduleForMonth(raw, s.plan,
+          mkDate(mo.y, mo.m, 1).n, mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n);
+        const confirmed = [...s.over.weekdays].sort((a, b) => a - b);
+        const id = "schedrecheck:" + monthKey(mo.y, mo.m);
+        if (seen.confident &&
+            seen.weekdays.join(",") !== confirmed.join(",") &&
+            !wasAnswered(s.key, id)) {
+          const seenLabel = seen.weekdays.map((w) => WEEKDAYS[w]).join(", ");
+          const keptLabel = confirmed.map((w) => WEEKDAYS[w]).join(", ");
+          out.push({
+            cat: "recheck", key: s.key, id, who: s.display,
+            ask: "Their schedule was confirmed as " + keptLabel + ", but " + mo.label +
+                 "'s visits read confidently as " + seenLabel +
+                 ". Schedules change; which is right now?",
+            options: [
+              { label: "Switch to " + seenLabel, suggest: true, apply: () => {
+                  const r = ovFor(s.key, true);
+                  r.weekdays = [...seen.weekdays];
+                  if (seen.sessionHours) r.sessionHours = seen.sessionHours;
+                } },
+              { label: "Keep " + keptLabel, apply: () => {} },
+            ],
+          });
+        }
+      }
+    }
   }
   // Grouped so a person can work through one kind of answer at a time - the Radius hold
   // screen open for the hold batch, then the rest - instead of context-switching per
   // student. Likely holds first because they are the cheapest to confirm.
-  const ORDER = ["hold", "absent", "stopped", "plan", "schedule"];
+  const ORDER = ["recheck", "hold", "absent", "stopped", "plan", "schedule"];
   out.sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.who.localeCompare(b.who));
   return out;
 }
@@ -1703,6 +1776,7 @@ function saveHoldDates(key, from, to) {
 }
 
 const QUEUE_HEADINGS = {
+  recheck: "Saved answers the newest export disagrees with",
   hold: "Looks like a hold — the Radius hold screen can confirm these",
   absent: "A whole month with no attendance",
   stopped: "Stopped attending partway through a month",
@@ -2739,6 +2813,71 @@ function selfCheck() {
   const emptyWeek = buildMonth(2026, 8, [visit(2026, 8, 11, 1), visit(2026, 8, 13, 1)], tueThu, 8, null,
                                D(2026, 8, 17).n, D(2026, 8, 16).n, null, [], 0, false);
   is("a week with no attendance keeps its missed days", emptyWeek.missed.length, 2);
+
+  // --- recheck questions: saved answers the newest export disagrees with ---------------
+  // Stub students drive buildQuestions directly; the global answer book is
+  // swapped out for the duration so the check never touches real answers.
+  {
+    const savedOverrides = overrides;
+    overrides = { version: 1, students: {} };
+    const monthStub = (y, m, extra) => Object.assign({
+      y, m, label: MONTHS[m - 1] + " " + y, isCurrent: false, onHold: false,
+      attended: 0, markerHours: 0, required: 8, absentWholeMonth: false, basis: "",
+      scheduled: [], missed: [],
+    }, extra);
+    const studentStub = (over, months, attendedDates) => ({
+      key: "t", display: "T", plan: 8, months, over: over, attendedDates: attendedDates || [],
+      schedule: { confident: true, weekdays: [0], sessionHours: 1, reason: "" },
+      schedules: {}, planInfo: { certain: true, sessionHours: 1 }, current: null,
+      flags: [], missed: [],
+    });
+
+    // A month answered as a hold that now shows 2 real hours.
+    const heldOver = { holds: [{ start: "2026-07", until: null, source: "entered" }],
+                       holdDates: [], notEnrolled: [], charged: [], answered: [], auditChecked: [] };
+    const heldMonths = [monthStub(2026, 7, { onHold: true, attended: 2 }), monthStub(2026, 8, { isCurrent: true })];
+    let qs = buildQuestions({ students: [studentStub(heldOver, heldMonths)] });
+    is("a busy held month is re-asked", qs.filter((q) => q.id.startsWith("heldbusy:2026-07")).length, 1);
+    // Marker hours alone are redemption, not contradiction.
+    const markerMonths = [monthStub(2026, 7, { onHold: true, attended: 2, markerHours: 2 }), monthStub(2026, 8, { isCurrent: true })];
+    is("marker-only hours do not re-ask a hold",
+       buildQuestions({ students: [studentStub(heldOver, markerMonths)] }).filter((q) => q.id.startsWith("heldbusy:")).length, 0);
+    // Choosing "not a hold" removes exactly that hold.
+    qs.find((q) => q.id.startsWith("heldbusy:")).options[1].apply();
+    is("not-a-hold removes the answered hold", ovFor("t", true).holds.length, 0);
+    // An answered re-ask stays answered.
+    markAnswered("t", "heldbusy:2026-07:2");
+    is("an answered re-ask does not return",
+       buildQuestions({ students: [studentStub(heldOver, heldMonths)] }).filter((q) => q.id.startsWith("heldbusy:")).length, 0);
+
+    // A confirmed Mon schedule against an August that confidently reads Tue/Thu.
+    overrides = { version: 1, students: {} };
+    const visits = [];
+    for (let w = 0; w < 4; w++) {
+      visits.push({ n: D(2026, 8, 4 + w * 7).n, hours: 1, marker: false });
+      visits.push({ n: D(2026, 8, 6 + w * 7).n, hours: 1, marker: false });
+    }
+    const schedOver = { holds: [], holdDates: [], notEnrolled: [], charged: [],
+                        weekdays: [0], sessionHours: 1, answered: [], auditChecked: [] };
+    const schedMonths = [monthStub(2026, 8, { attended: 8 }), monthStub(2026, 9, { isCurrent: true })];
+    qs = buildQuestions({ students: [studentStub(schedOver, schedMonths, visits)] });
+    const sq = qs.find((q) => q.id === "schedrecheck:2026-08");
+    is("a contradicted confirmed schedule is re-asked", !!sq, true);
+    if (sq) {
+      sq.options[0].apply();
+      is("switching adopts the observed days", ovFor("t", true).weekdays, [1, 3]);
+    }
+    // A month matching the confirmation asks nothing.
+    overrides = { version: 1, students: {} };
+    const monVisits = [];
+    for (let w = 0; w < 4; w++) monVisits.push({ n: D(2026, 8, 3 + w * 7).n, hours: 2, marker: false });
+    const monOver = Object.assign({}, schedOver, { weekdays: [0], sessionHours: 2 });
+    is("a schedule the month agrees with stays quiet",
+       buildQuestions({ students: [studentStub(monOver, schedMonths, monVisits)] })
+         .filter((q) => q.id.startsWith("schedrecheck:")).length, 0);
+
+    overrides = savedOverrides;
+  }
 
   // --- warnings carry their entries ----------------------------------------------------
   const shaped = normalise({ records: [
