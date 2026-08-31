@@ -147,6 +147,11 @@
   .days label { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-size: 12.5px;
                 cursor: pointer; background: var(--panel); }
   .days input { margin-right: 4px; }
+  details.warnbox > summary { cursor: pointer; font-weight: 600; color: var(--warn); padding: 8px 2px; list-style-position: inside; }
+  details.warnbox .notice { margin-top: 8px; }
+  details.notice.haslist > summary { cursor: pointer; }
+  ul.warnlist { margin: 8px 0 2px; padding-left: 22px; max-height: 220px; overflow-y: auto; }
+  ul.warnlist li { margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -504,6 +509,32 @@ function say(html, kind) {
 
 function clearMessages() { el("messages").innerHTML = ""; }
 
+function warnText(w) { return typeof w === "string" ? w : w.text; }
+
+// The warnings, spreadsheet-audit style: one collapsible box for the lot,
+// and each warning that knows its rows opens into the actual entries, so
+// "2 rows rounded to 0" can be answered by clicking it rather than by
+// re-opening the export.
+function renderWarnings() {
+  const list = report.warnings;
+  if (!list.length) return;
+  const outer = document.createElement("details");
+  outer.className = "warnbox";
+  outer.open = true;
+  outer.innerHTML =
+    "<summary>" + list.length + " warning" + (list.length === 1 ? "" : "s") +
+    " from this run <span class=\"sub\">— click to hide, click a warning for its entries</span></summary>" +
+    list.map((w) => {
+      const text = esc(warnText(w));
+      const items = typeof w === "string" ? [] : w.items || [];
+      if (!items.length) return '<div class="notice">' + text + "</div>";
+      return '<details class="notice haslist"><summary>' + text + "</summary>" +
+             '<ul class="warnlist">' + items.map((it) => "<li>" + esc(it) + "</li>").join("") +
+             "</ul></details>";
+    }).join("");
+  el("messages").appendChild(outer);
+}
+
 function markLoaded(which, fileName, rows, savedAt) {
   const drop = which === "attendance" ? el("dropAtt") : el("dropStu");
   const label = which === "attendance" ? el("nameAtt") : el("nameStu");
@@ -705,13 +736,27 @@ const ACTIVE = new Set(["enrolled", "new", "pre-enrolled"]);
 
 function normalise(attendance, roster) {
   const warnings = [];
+  // A warning that knows which rows it is about carries them; the banner
+  // renderer turns those into a dropdown so nobody has to take a count
+  // on faith.
+  const warn = (text, items) =>
+    warnings.push(items && items.length ? { text, items } : text);
+  const rowName = (r) => ((r["First Name"] || "") + " " + (r["Last Name"] || "")).trim() || "(no name)";
   const visits = [];
   let unparsed = 0, zero = 0, timed = 0;
+  const unparsedRows = [], zeroRows = [];
   for (const r of attendance.records) {
     const when = parseDate(r["Attendance Date"]);
-    if (!when) { unparsed++; continue; }
+    if (!when) { unparsed++;
+      unparsedRows.push(rowName(r) + ' — date read as "' + (r["Attendance Date"] || "blank") + '"');
+      continue; }
     const hours = roundHours(r["Duration (Minutes)"]);
-    if (hours <= 0) { zero++; continue; }
+    if (hours <= 0) { zero++;
+      zeroRows.push(rowName(r) + " — " + r["Attendance Date"] +
+        (r["Arrival Time"] ? ", arrived " + r["Arrival Time"] : "") +
+        (r["Departure Time"] ? "" : ", no departure logged") +
+        ", " + (r["Duration (Minutes)"] || 0) + " min");
+      continue; }
     // 12:00 AM is never a real session (real ones run 1:30-7:30 pm). By convention an
     // entry logged at exactly midnight is a makeup-redemption marker: its hours credit
     // the month it is dated in, but it is not evidence of a weekly schedule.
@@ -726,8 +771,8 @@ function normalise(attendance, roster) {
       marker: startMinutes === 0,
     });
   }
-  if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
-  if (zero) warnings.push(zero + " attendance rows rounded to 0 hours and were ignored");
+  if (unparsed) warn(unparsed + " attendance rows had an unreadable date and were skipped", unparsedRows);
+  if (zero) warn(zero + " attendance rows rounded to 0 hours and were ignored", zeroRows);
   if (visits.length && !timed) {
     warnings.push("the attendance export carries no session start times, so 12 AM makeup-redemption markers cannot be recognised");
   }
@@ -765,7 +810,8 @@ function normalise(attendance, roster) {
   }
   for (const key of clash) people.get(key).ambiguous = true;
   if (clash.size) {
-    warnings.push(clash.size + " names appear on more than one roster record; those students are flagged rather than silently merged");
+    warn(clash.size + " names appear on more than one roster record; those students are flagged rather than silently merged",
+         [...clash].map((k) => displayName(k)).sort());
   }
   return { visits, people, warnings };
 }
@@ -1348,6 +1394,9 @@ function buildReport(attendance, roster, todayN) {
   const today = fromDayNumber(todayN);
   const dataThrough = fromDayNumber(dataThroughN);
   let holdsClosed = 0;
+  const holdsClosedNames = [];
+  const warn = (text, items) =>
+    warnings.push(items && items.length ? { text, items } : text);
   const firstDate = fromDayNumber(firstN);
 
   const span = [];
@@ -1371,7 +1420,10 @@ function buildReport(attendance, roster, todayN) {
     const plan = planInfo.hours;
 
     if (over && rec && rec.status.toLowerCase() === "enrolled") {
-      if (closeHolds(key, monthKey(dataThrough.y, dataThrough.m))) holdsClosed++;
+      if (closeHolds(key, monthKey(dataThrough.y, dataThrough.m))) {
+        holdsClosed++;
+        holdsClosedNames.push(displayName(key));
+      }
     }
 
     // Exact hold periods, parsed once per student
@@ -1451,16 +1503,21 @@ function buildReport(attendance, roster, todayN) {
   const shakyGrant = students.reduce((a, s) => a + (s.current && !s.schedule.confident ? s.current.granted : 0), 0);
   const totalGrant = students.reduce((a, s) => a + (s.current ? s.current.granted : 0), 0);
   if (shakyGrant) {
-    warnings.push(shakyGrant + " of " + totalGrant + " makeup hrs granted for the current month rest on a schedule that could not be inferred confidently; check those before booking");
+    warn(shakyGrant + " of " + totalGrant + " makeup hrs granted for the current month rest on a schedule that could not be inferred confidently; check those before booking",
+         students.filter((s) => s.current && !s.schedule.confident && s.current.granted > 0)
+                 .map((s) => s.display + " — " + s.current.granted + " hr(s) granted, schedule guessed (" + s.schedule.reason + ")"));
   }
   const shaky = students.filter((s) => !s.schedule.confident).length;
   if (shaky) {
-    warnings.push(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates");
+    warn(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates",
+         students.filter((s) => !s.schedule.confident)
+                 .map((s) => s.display + " — guessed " + scheduleLabel(s.schedule) + " (" + s.schedule.reason + ")"));
   }
 
   const win = payableWindow(firstN, dataThroughN);
   if (holdsClosed) {
-    warnings.push(holdsClosed + " hold(s) ended automatically because this export shows those students enrolled again");
+    warn(holdsClosed + " hold(s) ended automatically because this export shows those students enrolled again",
+         holdsClosedNames.sort());
     saveOverrides();
   }
   return {
@@ -2168,7 +2225,7 @@ function render() {
   renderQueue();
   renderTabs();
   renderTable();
-  for (const w of report.warnings) say(esc(w));
+  renderWarnings();
   el("tabs").querySelectorAll(".tab").forEach((b) => {
     b.addEventListener("click", () => { activeTab = b.dataset.tab; renderTabs(); renderTable();
       el("tabs").querySelectorAll(".tab").forEach((x) => x.classList.toggle("on", x.dataset.tab === activeTab));
@@ -2378,7 +2435,10 @@ function exportRows() {
                  ["Hours to book this month", report.behind.reduce((a, s) => a + s.toSchedule, 0)],
                  ["On hold", report.held.length],
                  ["Enrolled, never attended", report.neverAttended.length], []];
-  for (const w of report.warnings) notes.push(["Note", w]);
+  for (const w of report.warnings) {
+    notes.push(["Note", warnText(w)]);
+    if (typeof w !== "string") for (const it of w.items) notes.push(["", "· " + it]);
+  }
 
   return [
     { name: "Owed past months", rows: owes },
@@ -2679,6 +2739,15 @@ function selfCheck() {
   const emptyWeek = buildMonth(2026, 8, [visit(2026, 8, 11, 1), visit(2026, 8, 13, 1)], tueThu, 8, null,
                                D(2026, 8, 17).n, D(2026, 8, 16).n, null, [], 0, false);
   is("a week with no attendance keeps its missed days", emptyWeek.missed.length, 2);
+
+  // --- warnings carry their entries ----------------------------------------------------
+  const shaped = normalise({ records: [
+    { "First Name": "A", "Last Name": "B", "Attendance Date": "8/5/2026", "Duration (Minutes)": "10", "Arrival Time": "2:53 PM" },
+    { "First Name": "C", "Last Name": "D", "Attendance Date": "8/5/2026", "Duration (Minutes)": "60", "Arrival Time": "3:00 PM" },
+  ] }, { records: [] });
+  const zeroWarn = shaped.warnings.find((w) => warnText(w).includes("rounded to 0"));
+  is("the rounded-to-0 warning names its rows",
+     !!zeroWarn && typeof zeroWarn !== "string" && zeroWarn.items.length === 1 && zeroWarn.items[0].includes("A B"), true);
 
   return { ran, fails };
 }

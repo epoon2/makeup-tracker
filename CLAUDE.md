@@ -61,7 +61,7 @@ a file on a USB stick cannot set headers.
 ## Verifying a change
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
-**Run self-check**. It runs 53 assertions against fixed inputs — rounding, date handling,
+**Run self-check**. It runs the built-in assertions — over a hundred now — against fixed inputs — rounding, date handling,
 FIFO settlement, hold coverage, absence resolution, schedule inference, the data horizon —
 and needs no exports and no tooling. It takes milliseconds.
 
@@ -115,7 +115,7 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Review queue | 1139 | Generates questions and applies answers. |
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
 | Writing .xlsx | 1521 | CRC32 plus `CompressionStream`, minimal OOXML. |
-| Self-check | 1767 | The 53 assertions. |
+| Self-check | 1767 | The self-check assertions. |
 | Student search | 1913 | Global search, keyboard handling, focus mode. |
 
 Line numbers drift as soon as you edit. Search for the section title instead.
@@ -174,6 +174,12 @@ export (1859 -> 1657). Do not revert to exact-weekday judging.
 **Nothing a person answers is permanent.** Per-hold remove buttons plus a per-student
 "Clear and ask again" that deletes the whole override record. Assume answers will be
 wrong sometimes: misclicks and changing schedules are normal, not exceptional.
+
+**Warnings carry their entries.** A warning may be a plain string or
+`{ text, items }`; the banner area renders one collapsible box with a dropdown per
+warning listing the rows or students behind it, and the Excel export writes the items
+as indented notes. Keep warning TEXT identical to `reference/`'s strings — parity and
+the baseline compare text, not shape.
 
 **The current month is projected**, not judged: remaining scheduled sessions added to
 hours attended, and any gap granted as makeup hours now.
