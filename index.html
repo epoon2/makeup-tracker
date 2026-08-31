@@ -78,6 +78,16 @@
   table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13.5px; }
   th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase;
        letter-spacing: .4px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  /* Frozen rows, the way a spreadsheet freezes them: the search + tabs
+     block sticks to the top of the screen, and the table's header row
+     sticks just beneath it. --frozen-h is measured by a ResizeObserver
+     because the tabs wrap to two lines on narrow screens. The box-shadow
+     stands in for th's border-bottom, which border-collapse leaves
+     behind when the row starts floating. */
+  .frozen { position: sticky; top: 0; z-index: 30; background: var(--panel);
+            margin: -18px -20px 0; padding: 18px 20px 8px; border-radius: 8px 8px 0 0; }
+  thead th { position: sticky; top: var(--frozen-h, 96px); z-index: 20;
+             background: var(--panel); box-shadow: 0 1px 0 var(--line); }
   td { padding: 9px 10px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
   tr.head { cursor: pointer; }
   tr.head:hover td { background: #f7fafd; }
@@ -187,15 +197,20 @@
     </div>
     <div class="cards" id="cards"></div>
     <div class="panel">
-      <div class="finder" id="finder">
-        <input type="search" id="globalFind" placeholder="Search any student by name    press /" autocomplete="off" spellcheck="false">
-        <div class="hits" id="findHits" hidden></div>
-      </div>
-      <div class="row" style="justify-content:space-between; margin-top:14px">
-        <div class="tabs" id="tabs"></div>
-        <div class="toolbar">
-          <button class="ghost" id="clearFocus" hidden>Show everyone</button>
-          <button class="ghost" id="download">Export to Excel</button>
+      <!-- Search and tabs pin to the top of the screen while the
+           student table scrolls, spreadsheet-frozen-rows style; the
+           table header pins just beneath them (see .frozen CSS). -->
+      <div class="frozen" id="frozenHead">
+        <div class="finder" id="finder">
+          <input type="search" id="globalFind" placeholder="Search any student by name    press /" autocomplete="off" spellcheck="false">
+          <div class="hits" id="findHits" hidden></div>
+        </div>
+        <div class="row" style="justify-content:space-between; margin-top:14px">
+          <div class="tabs" id="tabs"></div>
+          <div class="toolbar">
+            <button class="ghost" id="clearFocus" hidden>Show everyone</button>
+            <button class="ghost" id="download">Export to Excel</button>
+          </div>
         </div>
       </div>
       <div id="tableWrap"></div>
@@ -2875,6 +2890,19 @@ el("run").addEventListener("click", () => {
     throw err;
   }
 });
+
+// Keep the table header pinned exactly beneath the frozen search/tabs
+// block, whatever height the wrapping tabs give it on this screen.
+(function () {
+  const frozen = el("frozenHead");
+  if (!frozen || !window.ResizeObserver) { return; }
+  const apply = function () {
+    document.documentElement.style.setProperty("--frozen-h",
+      frozen.getBoundingClientRect().height + "px");
+  };
+  new ResizeObserver(apply).observe(frozen);
+  apply();
+})();
 
 restoreSaved();
 
