@@ -147,6 +147,7 @@
   .days label { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-size: 12.5px;
                 cursor: pointer; background: var(--panel); }
   .days input { margin-right: 4px; }
+  details.fold > summary { cursor: pointer; padding: 2px 0; list-style-position: inside; }
   details.warnbox > summary { cursor: pointer; font-weight: 600; color: var(--warn); padding: 8px 2px; list-style-position: inside; }
   details.warnbox .notice { margin-top: 8px; }
   details.notice.haslist > summary { cursor: pointer; }
@@ -185,20 +186,29 @@
   </div>
 
   <div id="results" hidden>
+    <!-- The questions and the odd-entries audit both fold shut by
+         default; the summary line carries the counts, so a glance says
+         whether opening either is worth it. The open state lives on the
+         details element, which re-renders never rebuild, so answering a
+         question does not snap the fold closed. -->
     <div class="panel" id="queuePanel" hidden>
-      <div class="row" style="justify-content:space-between">
-        <div><b id="queueTitle"></b> <span class="sub" id="queueSub"></span></div>
-        <div class="toolbar">
-          <button class="ghost" id="exportAnswers">Save answers to a file</button>
-          <button class="ghost" id="importAnswers">Load answers</button>
-          <button class="ghost" id="clearAnswers">Clear answers</button>
+      <details class="fold" id="queueFold">
+        <summary><b id="queueTitle"></b> <span class="sub" id="queueSub"></span></summary>
+        <div class="row" style="justify-content:flex-end; margin-top:8px">
+          <div class="toolbar">
+            <button class="ghost" id="exportAnswers">Save answers to a file</button>
+            <button class="ghost" id="importAnswers">Load answers</button>
+            <button class="ghost" id="clearAnswers">Clear answers</button>
+          </div>
         </div>
-      </div>
-      <div id="queueList"></div>
+        <div id="queueList"></div>
+      </details>
     </div>
     <div class="panel" id="auditPanel" hidden>
-      <div><b id="auditTitle"></b> <span class="sub">these are worth a look in Radius; nothing here changes the numbers</span></div>
-      <div id="auditList"></div>
+      <details class="fold" id="auditFold">
+        <summary><b id="auditTitle"></b> <span class="sub">these are worth a look in Radius; nothing here changes the numbers</span></summary>
+        <div id="auditList"></div>
+      </details>
     </div>
     <div class="cards" id="cards"></div>
     <div class="panel">
@@ -1887,7 +1897,12 @@ function renderAudit() {
 function renderQueue() {
   renderAudit();
   queue = buildQuestions(report);
-  if (focusKey) queue = queue.filter((q) => q.key === focusKey);
+  if (focusKey) {
+    queue = queue.filter((q) => q.key === focusKey);
+    // Focusing one student means they came here to look; open the folds.
+    el("queueFold").open = true;
+    el("auditFold").open = true;
+  }
   const panel = el("queuePanel");
   const anyAnswers = Object.keys(overrides.students).length > 0;
   panel.hidden = !queue.length && !anyAnswers && !focusKey;
