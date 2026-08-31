@@ -726,6 +726,13 @@ function nameKey(first, last) {
   return clean(first) + "\u001f" + clean(last);
 }
 
+// Centre convention since 31 Aug 2026: when two students share a name,
+// the OLDER one's last name in Radius gains a trailing " *". The star
+// survives nameKey, so the two join as separate students; this helper
+// lets the table badge the older record so the star reads as deliberate
+// rather than as a typo.
+function isOlderRecord(display) { return /\*\s*$/.test(display); }
+
 function displayName(key) {
   const [f, l] = key.split("\u001f");
   const title = (s) => s.replace(/\S+/g, (w) => w[0].toUpperCase() + w.slice(1));
@@ -811,7 +818,8 @@ function normalise(attendance, roster) {
   for (const key of clash) people.get(key).ambiguous = true;
   if (clash.size) {
     warn(clash.size + " names appear on more than one roster record; those students are flagged rather than silently merged",
-         [...clash].map((k) => displayName(k)).sort());
+         [...clash].map((k) => displayName(k)).sort()
+           .concat(["If two of these are genuinely different students, rename the OLDER one's last name in Radius with a trailing \" *\" — the tracker will then keep them apart."]));
   }
   return { visits, people, warnings };
 }
@@ -2197,7 +2205,10 @@ function renderTable() {
       const flag = s.onHold ? '<span class="pill mute">on hold</span>' : "";
       const warn = s.flags.length ? '<span class="pill warn">' + s.flags.length + " to check</span>" : "";
       return '<tr class="head" data-i="' + i + '">' +
-        "<td>" + esc(s.display) + "</td>" +
+        "<td>" + esc(s.display) +
+        (isOlderRecord(s.display)
+          ? ' <span class="pill mute" title="The trailing * marks the older of two students sharing this name">older record</span>'
+          : "") + "</td>" +
         "<td>" + esc(scheduleLabel(s.schedule)) + (s.schedule.confident ? "" : ' <span class="pill warn">?</span>') + "</td>" +
         '<td class="num">' + s.plan + "</td>" +
         '<td class="num">' + (s.owed ? '<span class="pill bad">' + s.owed + "</span>" : "&mdash;") + "</td>" +
@@ -2612,6 +2623,11 @@ function selfCheck() {
 
   // --- name key: the join between the two exports ------------------------------------
   is("nameKey collapses case and space", nameKey(" De  La Cruz ", "SOTO"), nameKey("de la cruz", "soto"));
+  // Same-name students: the older record's trailing " *" keeps them apart.
+  is("a trailing star keeps two same-name students apart",
+     nameKey("Jaden", "Ho") !== nameKey("Jaden", "Ho *"), true);
+  is("the starred name renders with its star", displayName(nameKey("Jaden", "Ho *")), "Jaden Ho *");
+  is("the star marks the older record", [isOlderRecord("Jaden Ho *"), isOlderRecord("Jaden Ho")], [true, false]);
 
   // --- payable window: two months back, clipped to the export start -------------------
   const w1 = payableWindow(D(2026, 7, 1).n, D(2026, 8, 17).n);

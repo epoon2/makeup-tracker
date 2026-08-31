@@ -166,3 +166,12 @@ def test_a_moved_week_is_not_a_missed_week():
                                   Visit("t", dt.date(2026, 8, 13), 1, 8)], tue_thu, 8, None,
                         dt.date(2026, 8, 17), dt.date(2026, 8, 16))
     assert len(empty.missed_dates) == 2
+
+
+def test_trailing_star_keeps_same_name_students_apart():
+    # Centre convention since 31 Aug 2026: the older of two students sharing
+    # a name gets a trailing " *" on their last name in Radius. The join key
+    # must keep the star, or the two collapse back into one student.
+    from reference.loaders import name_key
+    assert name_key("Jaden", "Ho") != name_key("Jaden", "Ho *")
+    assert name_key("Jaden", "Ho *") == name_key("jaden", "ho  *")

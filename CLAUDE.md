@@ -192,6 +192,13 @@ hours attended, and any gap granted as makeup hours now.
 **Attendance only became reliable from 1 July 2026.** There is no earlier data. Do not
 suggest re-exporting from further back.
 
+**Same-name students: the older record carries a trailing " *"** (centre convention,
+31 Aug 2026). When a current student shares a name with a former one, the former
+student's LAST NAME in Radius is renamed with a trailing " *". Both engines' name keys
+preserve the star, so the two join as separate students; the table badges the starred
+one as "older record", and the duplicate-names warning teaches the convention. Never
+"clean" the star out of names in either engine.
+
 **"Enrolled, never attended" means `Enrollment Status = Enrolled` only.** New and
 Pre-Enrolled were tried and produced mostly false alarms.
 
