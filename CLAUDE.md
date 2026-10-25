@@ -80,9 +80,10 @@ both, and into `mergeRecords()` in core.mjs, or it will be dropped on the way to
 ## Verifying a change
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
-**Run self-check**. It runs 105 assertions against fixed inputs — rounding, date handling,
+**Run self-check**. It runs 121 assertions against fixed inputs — rounding, date handling,
 FIFO settlement, hold coverage, absence resolution, schedule inference, the data horizon,
-and how shared answers are sent and merged — and needs no exports and no tooling. It takes
+session windows, plan reading and per-month plans, a small end-to-end report, and how
+shared answers are sent and merged — and needs no exports and no tooling. It takes
 milliseconds.
 
 It is not decoration. Six deliberate rule breakages were introduced to test it, and it
@@ -97,7 +98,9 @@ and record what moved and why.
 **If you have Python available**, the deeper checks are:
 
 ```bash
-python3 -m pytest tests -q                      # 24 unit tests on the Python rules
+python3 -m pytest tests -q                      # 41 unit tests on the Python rules
+node tests/synthetic_exports.mjs                # made-up exports into testdata/, when the real ones are not at hand
+PARITY_TODAY=2026-10-20 python3 tests/parity_browser.py   # parity on those
 python3 -m reference.run testdata/attendance.xlsx testdata/students.xlsx 2026-08-19
 python3 tests/parity_browser.py                 # every field, both engines, all students
 python3 tests/e2e_browser.py                    # drop, run, filter, download
@@ -145,9 +148,9 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Review queue | 1139 | Generates questions and applies answers. |
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
 | Writing .xlsx | 1521 | CRC32 plus `CompressionStream`, minimal OOXML. |
-| Shared mode | 2540 | Sign-in, accounts, answer sync (`answerPatch`/`adoptAnswers`), shared exports, the pre-sharing offer. |
-| Self-check | 3275 | The 105 assertions. |
-| Student search | 3560 | Global search, keyboard handling, focus mode. |
+| Shared mode | 2590 | Sign-in, accounts, answer sync (`answerPatch`/`adoptAnswers`), shared exports, the pre-sharing offer. |
+| Self-check | 3410 | The 121 assertions. |
+| Student search | 3770 | Global search, keyboard handling, focus mode. |
 
 Line numbers drift as soon as you edit. Search for the section title instead.
 
@@ -167,6 +170,11 @@ system working, not a nuisance.
 
 **Monthly requirement** is the `Sessions Per Month` value on the attendance rows, in
 **hours**: 4, 8 or 12. A 120-minute visit is 2 hours.
+
+**Each month uses its own plan** (25 Oct 2026): the `Sessions Per Month` on that month's
+rows, the latest row winning; a month with no rows keeps the month before's; months
+before the first row take the first known plan. `monthlyPlans`/`monthly_plans`. A current
+plan is never applied backwards. The student's plan column shows the latest.
 
 **Durations round half-up to the nearest hour.** 58 min is 1, 90 min is 2, under 30 min is
 0 and ignored entirely.
@@ -193,9 +201,11 @@ Attendance can only be recorded for an enrolled student, so a visit proves enrol
 that date. Nothing after means they left; nothing before means they had not started.
 **Bracketed on both sides is assumed to be a HOLD** (decided 20 Aug 2026: a student with
 no attendances for a whole month is assumed to have been on hold). Nothing is
-owed, the queue still asks, and a `charged` override charges the full plan instead. This
+owed, and a `charged` override charges the full plan instead. This
 replaced the old charge-and-flag behaviour and moved the real-data totals from
 160 students / 780 hrs owed to 100 / 301, with 62 months assumed held.
+**Not asked about** (decided 25 Oct 2026: "a hold or a break"): no review-queue
+question; the month's line in the student's panel has a charge button and an undo.
 
 **Missed sessions are netted per ISO week in both engines.** A week is short only by
 `attended - (scheduled - missed)`; the earliest scheduled days are forgiven first. This
@@ -215,10 +225,14 @@ suggest re-exporting from further back.
 **"Enrolled, never attended" means `Enrollment Status = Enrolled` only.** New and
 Pre-Enrolled were tried and produced mostly false alarms.
 
-**A 12:00 AM entry is a makeup-redemption marker** (confirmed 20 Aug 2026: real
-sessions run only 1:30–7:30 pm, and 12 AM is never legitimate). Marker hours credit the
+**A visit starting outside the session windows is a makeup** (25 Oct 2026, the same
+windows as the Radius roster tool, all year round, no summer exception): Mon, Tue, Thu,
+Fri 2:45–7:15 PM; Wed 1:45–7:15 PM; Sat 8:45 AM–1:15 PM; Sunday closed.
+`SESSION_WINDOWS`/`isMakeupTime` in the page, `SESSION_WINDOWS`/`is_makeup_time` in
+`reference/loaders.py`. A 12:00 AM entry is the commonest case (confirmed 20 Aug 2026:
+12 AM is never legitimate). Makeup ("marker") hours credit the
 month they are dated in but are excluded from schedule inference and from plan-reading
-evidence. The centre's logging convention is one logged hour = one delivered hour: a
+evidence, and are never audited. The centre's logging convention is one logged hour = one delivered hour: a
 makeup attached to a regular session is logged as two entries, the regular hour at its
 real time plus a 1-hour 12 AM marker dated to the month being credited, ideally on the
 exact missed date. If the export carries no start times at all, the tool says so in a
@@ -226,9 +240,24 @@ warning and markers simply cannot be recognised.
 
 **A plan number can mean hours or sessions** (confirmed 20 Aug 2026: the 4/month students
 with 2-hour sessions cannot be moved to 8/month in Radius, so the tool must infer).
-`resolvePlan`/`resolve_plan` compares both readings against the median of completed-month
-real hours, needs at least two months of evidence to decide, defaults to hours when
-uncertain, asks in the review queue, and honours a pinned `planReading` override.
+`resolvePlan`/`resolve_plan`: with two or more completed months, the median of each
+month's real hours as a multiple of that month's plan, against 1 (hours) or the session
+length (sessions). With fewer, or a tie (25 Oct 2026), the weekly pattern: real hours per
+week attended, over at least three weeks, x 52/12, against the current plan, decided only
+when one reading is at most half as far off as the other. Defaults to hours when
+uncertain, asks in the review queue only then, and honours a pinned `planReading`.
+
+**Above-plan attendance is a note, not a flag** (25 Oct 2026). When regular (non-makeup)
+hours reach the next plan tier (4 -> 8 -> 12) in each of the last three completed,
+non-held months on an unchanged plan, the student's panel says "Likely on a 12/month
+plan" (inferred). A plan change visible in the export is noted at once as confirmed.
+Both are recomputed every run, so they disappear when the facts change. Notes are not
+"to check" flags.
+
+**Shared names** (25 Oct 2026): a student who re-enrolled has old roster records under the
+same name; the live one is used without a flag. Two students sharing a name are told
+apart in Radius with " *" after the last name ("Jacob Chan *"), a different name here.
+Only two Enrolled records under exactly one name are flagged.
 
 **Hours already attended in the current month pay old debt immediately** — actual hours,
 never the projection, and the current month still never opens a debt of its own.
@@ -247,8 +276,10 @@ export to learn its columns; do not guess the format.
 from the earlier points-only design). Answers are stored as `auditChecked`
 ids plus `hourAdjust` per-month deltas in overrides; the deltas are applied to a
 month's attended hours in BOTH engines (`hour_adjust` in `reference/months.py`).
-Thresholds stay conservative (`EXCESS_WORTH_ASKING = 3`); a list with false alarms
-stops being read.
+**Since 25 Oct 2026 it lists only duplicates and future-dated entries.** Off-hours
+entries are makeups now; heavy months and 2-hour entries for 1-hour students were
+dropped at Ethan's request (extra hours are fine; they pay older debt). Earlier
+`hourAdjust` corrections still apply.
 
 **Holds can be exact dates.** `holdDates` overrides carry mid-month periods; a period
 covering every scheduled day acts as a whole-month hold, and a partial one prorates

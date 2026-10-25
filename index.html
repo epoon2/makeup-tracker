@@ -90,6 +90,9 @@
   .pill.bad { background: #fdeceb; color: var(--bad); }
   .pill.ok { background: #e7f3ea; color: var(--ok); }
   .pill.mute { background: #eef2f7; color: var(--muted); }
+  .pill.mk { background: #eef0fb; color: #4a4fa3; }
+  .detail .note { font-size: 13px; color: var(--ink); padding: 1px 0; }
+  .detail .note::before { content: "• "; color: var(--muted); }
   .detail { background: #fbfcfe; }
   .detail dl { display: grid; grid-template-columns: 150px 1fr; gap: 4px 14px; margin: 4px 0 0; }
   .detail dt { color: var(--muted); font-size: 12.5px; }
@@ -259,7 +262,7 @@
       <div id="queueList"></div>
     </div>
     <div class="panel" id="auditPanel" hidden>
-      <div><b id="auditTitle"></b> <span class="sub">these are worth a look in Radius; nothing here changes the numbers</span></div>
+      <div><b id="auditTitle"></b> <span class="sub">the same entry twice, or dated in the future: worth a look in Radius</span></div>
       <div id="auditList"></div>
     </div>
     <div class="cards" id="cards"></div>
@@ -729,6 +732,33 @@ function parseDate(value) {
 // the rest are fallbacks, and a time inside Attendance Date is the last resort.
 const TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
 
+/*
+  The centre's session windows, by weekday (Monday first), as start-time minutes after
+  midnight. The same windows the Radius roster tool uses, all year round (confirmed
+  25 Oct 2026): Mon, Tue, Thu, Fri 2:45-7:15 PM; Wed 1:45-7:15 PM; Sat 8:45 AM-1:15 PM;
+  closed Sunday.
+
+  A visit that starts outside its day's window is a makeup, never a regular session -
+  the 12 AM marker is just the most common case. Its hours count for the month it is
+  dated in like any others, but it is not evidence of the weekly schedule or of what
+  the plan number means, and it is never flagged as odd.
+*/
+const SESSION_WINDOWS = [
+  [14 * 60 + 45, 19 * 60 + 15],
+  [14 * 60 + 45, 19 * 60 + 15],
+  [13 * 60 + 45, 19 * 60 + 15],
+  [14 * 60 + 45, 19 * 60 + 15],
+  [14 * 60 + 45, 19 * 60 + 15],
+  [8 * 60 + 45, 13 * 60 + 15],
+  null,
+];
+
+function isMakeupTime(dayN, startMinutes) {
+  if (startMinutes === null || startMinutes === undefined) return false;
+  const w = SESSION_WINDOWS[weekdayOf(dayN)];
+  return !w || startMinutes < w[0] || startMinutes > w[1];
+}
+
 // A start time as minutes since midnight, or null when the cell says nothing.
 function parseTimeOfDay(value) {
   if (value === null || value === undefined) return null;
@@ -798,9 +828,9 @@ function normalise(attendance, roster) {
     if (!when) { unparsed++; continue; }
     const hours = roundHours(r["Duration (Minutes)"]);
     if (hours <= 0) { zero++; continue; }
-    // 12:00 AM is never a real session (real ones run 1:30-7:30 pm). By convention an
-    // entry logged at exactly midnight is a makeup-redemption marker: its hours credit
-    // the month it is dated in, but it is not evidence of a weekly schedule.
+    // A visit starting outside the session windows (12 AM markers included) is a makeup:
+    // its hours credit the month it is dated in, but it is not evidence of a weekly
+    // schedule. See SESSION_WINDOWS.
     const startMinutes = startMinutesFor(r);
     if (startMinutes !== null) timed++;
     visits.push({
@@ -809,13 +839,13 @@ function normalise(attendance, roster) {
       hours,
       spm: parseInt(r["Sessions Per Month"], 10) || 0,
       startMinutes,
-      marker: startMinutes === 0,
+      marker: isMakeupTime(when.n, startMinutes),
     });
   }
   if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
   if (zero) warnings.push(zero + " attendance rows rounded to 0 hours and were ignored");
   if (visits.length && !timed) {
-    warnings.push("the attendance export carries no session start times, so 12 AM makeup-redemption markers cannot be recognised");
+    warnings.push("the attendance export carries no session start times, so makeups (12 AM entries and visits outside session hours) cannot be recognised");
   }
 
   const people = new Map();
@@ -840,7 +870,11 @@ function normalise(attendance, roster) {
     rec.expected = status.toLowerCase() === "enrolled";
     const seen = people.get(key);
     if (!seen) { people.set(key, rec); continue; }
-    clash.add(key);
+    // Old records under the same name are normal (a student who left and re-enrolled),
+    // and the live one is picked below. Two students who really share a name are told
+    // apart in Radius with " *" after the last name, which makes a different name here.
+    // So only two Enrolled records under exactly the same name are worth a warning.
+    if (rec.expected && seen.expected) clash.add(key);
     // Prefer the active record, then the more recently attending one. Either way the
     // student is flagged, so the report says it picked rather than pretending.
     let better = rec.active && !seen.active;
@@ -851,7 +885,7 @@ function normalise(attendance, roster) {
   }
   for (const key of clash) people.get(key).ambiguous = true;
   if (clash.size) {
-    warnings.push(clash.size + " names appear on more than one roster record; those students are flagged rather than silently merged");
+    warnings.push(clash.size + " name(s) belong to more than one Enrolled roster record; those students are flagged. In Radius, two students who share a name get \" *\" after the last name");
   }
   return { visits, people, warnings };
 }
@@ -1099,7 +1133,7 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   }
 
   const out = {
-    y, m, required, attended, markerHours, onHold, isCurrent, proratedFrom,
+    y, m, required, attended, markerHours, onHold, isCurrent, proratedFrom, planHours,
     label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
     scheduled: [], missed: [], absentWholeMonth: false, assumedHold: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
     // The review queue and the ledger both ask "how short was this month".
@@ -1221,15 +1255,15 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
         out.note = out.required + " hrs because they were enrolled and absent all of " +
                    out.label + ", confirmed by hand";
       } else {
-        // A whole month with nothing recorded is assumed to be a hold: at this centre
-        // that is what an empty month almost always is, and charging a full plan for a
-        // month nobody attended produces makeup hours nobody will ever book. The review
-        // queue still asks, so it can be charged.
+        // A whole month with nothing recorded is assumed to be a hold or a break: at this
+        // centre that is what an empty month almost always is, and charging a full plan
+        // for a month nobody attended produces makeup hours nobody will ever book. It is
+        // not asked about (decided 25 Oct 2026); the student's details can charge it.
         out.assumedHold = true;
         out.onHold = true;
         out.required = 0;
-        out.note = "nothing recorded for all of " + out.label + ", so it is assumed to be a hold " +
-                   "and nothing is owed for it; confirm in the queue if they were enrolled and simply absent";
+        out.note = "nothing recorded for all of " + out.label + ", so it is taken as a hold or a break " +
+                   "and nothing is owed for it";
       }
     } else {
       out.note = "enrolled but absent all of " + out.label;
@@ -1295,26 +1329,15 @@ function settle(months) {
 /* ---------------------------------------------------------------------------
    Attendance audit: entries that look off, for a person to check in Radius.
 
-   Deliberately few checks and conservative thresholds: a list with false alarms
-   in it stops being read, which is worse than no list.
+   Deliberately few checks: a list with false alarms in it stops being read, which is
+   worse than no list. Since 25 Oct 2026 it holds only what cannot be right as logged:
+   the same entry twice, and entries dated in the future. Visits outside session hours
+   are makeups (SESSION_WINDOWS), not oddities; extra hours in a month are not a
+   problem (they pay older debt, and a steady excess shows as a "likely bigger plan"
+   note instead); and 2-hour entries for 1-hour students count either way.
 --------------------------------------------------------------------------- */
 
-// The 1:30-7:30 pm window is the WEEKDAY window. The real export shows the centre runs
-// weekend mornings, and Arrival Time is a check-in clock, so sessions routinely end a few
-// minutes past 7:30. What survives contact with the data: weekday starts before 1:30 pm
-// are odd, starts before 8 am are odd on any day, end times are not checked.
-const WEEKDAY_OPEN_MINUTES = 13 * 60 + 30;
-const ANY_DAY_OPEN_MINUTES = 8 * 60;
-// A month running this many hours past its requirement with no 12 AM markers suggests
-// makeup hours folded into longer entries the old way.
-const EXCESS_WORTH_ASKING = 3;
-
-function fmtMinutes(min) {
-  const hh = Math.floor(min / 60), mm = min % 60;
-  return (hh % 12 || 12) + ":" + String(mm).padStart(2, "0") + " " + (hh < 12 ? "AM" : "PM");
-}
-
-function auditVisits(visits, typicalSessionHours, todayN) {
+function auditVisits(visits, todayN) {
   const out = [];
   const seen = new Map();
   const push = (entry) => {
@@ -1332,16 +1355,6 @@ function auditVisits(visits, typicalSessionHours, todayN) {
       push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "future",
              detail: "dated " + fmt(v.date) + ", which has not happened yet" });
     }
-    if (!v.marker && v.startMinutes !== null && v.startMinutes !== undefined) {
-      const weekend = weekdayOf(v.date.n) >= 5;
-      const tooEarly = v.startMinutes < ANY_DAY_OPEN_MINUTES ||
-                       (!weekend && v.startMinutes < WEEKDAY_OPEN_MINUTES);
-      if (tooEarly) {
-        const when = v.startMinutes < ANY_DAY_OPEN_MINUTES ? "before 8 am" : "on a weekday before the 1:30 pm opening";
-        push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "off-hours",
-               detail: "starts " + fmtMinutes(v.startMinutes) + " " + when + ", and is not a 12 AM marker - makeup or typo?" });
-      }
-    }
     if (!v.marker) {
       const dk = v.key + "|" + v.date.n + "|" + v.startMinutes + "|" + v.hours;
       seen.set(dk, (seen.get(dk) || 0) + 1);
@@ -1350,22 +1363,8 @@ function auditVisits(visits, typicalSessionHours, todayN) {
                detail: "two identical entries on the same date and time" });
       }
     }
-    if (!v.marker && typicalSessionHours === 1 && v.hours >= 2) {
-      push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "folded",
-             detail: v.hours + "-hour entry for a student whose sessions run 1 hour - if part of it is a makeup, log that hour as its own 12 AM entry" });
-    }
   }
   return out;
-}
-
-function auditMonth(key, label, required, attended, markerHours, onHold, mk) {
-  if (onHold || required <= 0) return null;
-  if (attended >= required + EXCESS_WORTH_ASKING && markerHours === 0) {
-    return { key, date: null, mk, hours: attended - required, kind: "heavy-month",
-             id: "heavy-month|" + mk + "|0",
-             detail: attended + " hrs in " + label + " against a requirement of " + required + ", with no 12 AM markers - folded makeup hours?" };
-  }
-  return null;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1393,8 +1392,46 @@ function payableWindow(firstN, throughN) {
 // plan at 4 while delivering 4 x 2 = 8 hours a month, and the plan cannot always be
 // changed (it is tied to billing). So the meaning is inferred from what full months
 // actually delivered, and a person can pin it either way from the review queue.
-function resolvePlan(rawPlan, visits, todayY, todayM, pinned) {
-  const raw = rawPlan > 0 ? rawPlan : 8;
+/*
+  The plan in force each month, from the Sessions Per Month on that month's attendance
+  rows (the latest row in the month wins). A month with no rows keeps the month before's
+  plan; months before the first row take the first known plan. So a plan that changed in
+  Radius from 8 to 12 counts as 8 for the earlier months and 12 from the change on, and a
+  student's current plan is never applied backwards.
+*/
+function monthlyPlans(visits, span) {
+  const latest = new Map();
+  for (const v of visits) {
+    if (!v.spm) continue;
+    const k = v.date.y + "-" + v.date.m;
+    const was = latest.get(k);
+    if (!was || v.date.n >= was.n) latest.set(k, { n: v.date.n, spm: v.spm });
+  }
+  const own = span.map(([y, m]) => (latest.get(y + "-" + m) || {}).spm || 0);
+  const out = [];
+  let last = 0;
+  for (const x of own) { if (x) last = x; out.push(last); }
+  const first = own.find((x) => x) || 8;
+  for (let i = 0; i < out.length && !out[i]; i++) out[i] = first;
+  return { plans: out, own };
+}
+
+/*
+  What the plan number means for this student: hours, or sessions? For one-hour students
+  the two are the same. For two-hour students the centre sometimes leaves the plan at 4
+  while delivering 4 x 2 = 8 hours, and the plan cannot always be changed (it is tied to
+  billing), so the meaning is read from what the student actually attends:
+    - two or more completed months: the median of each month's real hours as a multiple
+      of that month's plan, against 1 (hours) or the session length (sessions);
+    - otherwise, or on a tie, their weekly pattern: real hours per week they came, over
+      at least three weeks, as a month (x 52/12), against the current plan - decided
+      only when one reading is at most half as far off as the other.
+  Makeups (12 AM, outside session hours) are not evidence. A person can pin either
+  reading from the review queue, which is asked only when neither rule can tell.
+*/
+function resolvePlan(plans, span, visits, todayY, todayM, pinned) {
+  const latestRaw = plans[plans.length - 1];
+  const raw = latestRaw > 0 ? latestRaw : 8;
   const real = visits.filter((v) => v.hours > 0 && !v.marker);
   const out = { hours: raw, raw, sessionHours: 1, reading: "hours", certain: true, source: "plan" };
   if (!real.length) return out;
@@ -1410,23 +1447,45 @@ function resolvePlan(rawPlan, visits, todayY, todayM, pinned) {
   if (pinned === "hours") return Object.assign(out, { source: "override" });
   if (pinned === "sessions") return Object.assign(out, { hours: raw * L, reading: "sessions", source: "override" });
 
-  // Evidence: real (non-marker) hours per completed month with any attendance.
+  // Completed months: real hours as a multiple of that month's plan.
+  const index = new Map(span.map(([y, m], i) => [y + "-" + m, i]));
   const totals = new Map();
   for (const v of real) {
     if (v.date.y === todayY && v.date.m === todayM) continue;
     const k = v.date.y + "-" + v.date.m;
     totals.set(k, (totals.get(k) || 0) + v.hours);
   }
-  const values = [...totals.values()].sort((a, b) => a - b);
-  if (values.length < 2) return Object.assign(out, { certain: false });
+  // A month outside the span (a future-dated entry) is measured against the current plan.
+  const ratios = [...totals].map(([k, h]) => h / ((index.has(k) ? plans[index.get(k)] : 0) || raw)).sort((a, b) => a - b);
+  if (ratios.length >= 2) {
+    const mid = ratios.length >> 1;
+    const typical = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
+    const d1 = Math.abs(typical - 1), d2 = Math.abs(typical - L);
+    if (d2 < d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "inferred" });
+    if (d1 < d2) return out;
+  }
 
-  const mid = values.length >> 1;
-  const typical = values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
-  const d1 = Math.abs(typical - raw), d2 = Math.abs(typical - raw * L);
-  if (d2 < d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "inferred" });
-  if (d1 < d2) return out;
+  // The weekly pattern: Monday-to-Sunday weeks with real attendance.
+  const weeks = new Map();
+  for (const v of real) {
+    const w = Math.floor((v.date.n + 3) / 7);
+    weeks.set(w, (weeks.get(w) || 0) + v.hours);
+  }
+  if (weeks.size >= 3) {
+    let total = 0;
+    for (const h of weeks.values()) total += h;
+    const perMonth = total / weeks.size * 52 / 12;
+    const r = perMonth / raw;
+    const d1 = Math.abs(r - 1), d2 = Math.abs(r - L);
+    if (d2 * 2 <= d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "weekly" });
+    if (d1 * 2 <= d2) return Object.assign(out, { source: "weekly" });
+  }
   return Object.assign(out, { certain: false });
 }
+
+// The standard plans, smallest first. Used only for the "may be on a bigger plan" note.
+const PLAN_TIERS = [4, 8, 12];
+const BIGGER_PLAN_MONTHS = 3;
 
 function buildReport(attendance, roster, todayN) {
   const { visits, people, warnings } = normalise(attendance, roster);
@@ -1453,10 +1512,12 @@ function buildReport(attendance, roster, todayN) {
 
   const students = [];
   for (const [key, list] of grouped) {
-    const rawPlan = (list.find((v) => v.spm) || {}).spm || 8;
     const rec = people.get(key) || null;
     const over = ovFor(key, false);
-    const planInfo = resolvePlan(rawPlan, list, today.y, today.m, over ? over.planReading : null);
+    const monthly = monthlyPlans(list, span);
+    const planInfo = resolvePlan(monthly.plans, span, list, today.y, today.m, over ? over.planReading : null);
+    // Hours per plan unit: the session length when the plan counts sessions, else 1.
+    const unit = planInfo.reading === "sessions" ? planInfo.sessionHours : 1;
     const plan = planInfo.hours;
 
     if (over && rec && rec.status.toLowerCase() === "enrolled") {
@@ -1471,17 +1532,18 @@ function buildReport(attendance, roster, todayN) {
     }
 
     const schedules = {};
-    const months = span.map(([y, m]) => {
+    const months = span.map(([y, m], i) => {
       const firstN = mkDate(y, m, 1).n;
       const lastN = mkDate(y, m, lastDayOf(y, m)).n;
-      let s = inferScheduleForMonth(list, plan, firstN, lastN);
+      const monthPlan = monthly.plans[i] * unit;
+      let s = inferScheduleForMonth(list, monthPlan, firstN, lastN);
       if (over && over.weekdays) {
         s = { weekdays: [...over.weekdays].sort((a, b) => a - b),
               sessionHours: over.sessionHours || s.sessionHours,
               confident: true, reason: "set by hand" };
       }
       schedules[y + "-" + m] = s;
-      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN, over, holdRanges,
+      return buildMonth(y, m, list, s, monthPlan, rec, todayN, dataThroughN, over, holdRanges,
                         over && over.hourAdjust ? over.hourAdjust[monthKey(y, m)] || 0 : 0,
                         !!(over && (over.charged || []).includes(monthKey(y, m))));
     });
@@ -1490,35 +1552,55 @@ function buildReport(attendance, roster, todayN) {
     const schedule = schedules[span[span.length - 1][0] + "-" + span[span.length - 1][1]];
     const ledger = settle(months);
     const current = months.find((mo) => mo.isCurrent) || null;
+    // flags: worth checking. notes: worth knowing, nothing to do.
     const flags = [];
+    const notes = [];
     if (planInfo.reading === "sessions") {
       flags.push("plan " + planInfo.raw + "/month read as " + planInfo.raw + " sessions of " +
                  planInfo.sessionHours + " hrs = " + plan + " hrs/month" +
-                 (planInfo.source === "override" ? " (set by hand)" : " (from the attendance pattern)"));
+                 (planInfo.source === "override" ? " (set by hand)" : planInfo.source === "weekly"
+                   ? " (from their weekly pattern)" : " (from the attendance pattern)"));
     }
     if (!schedule.confident) flags.push("schedule uncertain: " + schedule.reason);
     if (over && over.note) flags.push("note: " + over.note);
-    if (rec && rec.ambiguous) flags.push("more than one roster record under this name");
+    if (rec && rec.ambiguous) flags.push("two Enrolled roster records under exactly this name");
     if (!rec) flags.push("no roster record matched");
-    for (const mo of months) {
-      if (mo.assumedHold) {
-        flags.push(mo.label + " assumed to be a hold; nothing owed for it");
-      } else if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE) {
-        flags.push(mo.required + " hrs charged for " + mo.label + "; enrolled and absent, confirmed by hand");
+
+    // A plan change Radius shows: confirmed, so said straight away.
+    let lastOwn = 0;
+    monthly.own.forEach((x, i) => {
+      if (!x) return;
+      if (lastOwn && x !== lastOwn) {
+        notes.push("Plan changed in Radius from " + lastOwn + " to " + x + "/month in " +
+                   MONTHS[span[i][1] - 1] + " " + span[i][0] + " (from the attendance export)");
+      }
+      lastOwn = x;
+    });
+    // Attending at the next plan level month after month: inferred, so said as likely,
+    // and gone again as soon as a month drops back.
+    const done = months.map((mo, i) => ({ mo, raw: monthly.plans[i] }))
+      .filter(({ mo }) => !mo.isCurrent && !mo.onHold && mo.required > 0);
+    const run = done.slice(-BIGGER_PLAN_MONTHS);
+    if (run.length === BIGGER_PLAN_MONTHS) {
+      const next = PLAN_TIERS.find((t) => t > run[run.length - 1].raw);
+      const regular = run.map(({ mo }) => mo.attended - mo.markerHours);
+      if (next && run.every(({ raw }) => raw === run[run.length - 1].raw) &&
+          regular.every((h) => h >= next * unit)) {
+        notes.push("Likely on " + (next === 8 || next === 11 || next === 18 ? "an " : "a ") + next + "/month plan: came " + regular.join(", ") + " regular hrs in " +
+                   run.map(({ mo }) => mo.shortLabel).join(", ") + " against a plan of " + run[run.length - 1].raw +
+                   " (inferred from attendance, not shown in Radius)");
       }
     }
-    const audit = auditVisits(list, schedule.sessionHours, todayN);
-    for (const mo of months) {
-      const entry = auditMonth(key, mo.label, mo.required, mo.attended, mo.markerHours, mo.onHold, monthKey(mo.y, mo.m));
-      if (entry) audit.push(entry);
-    }
+    // Empty months are explained on their own line under By month, with the button to
+    // charge them, so they are not repeated here.
+    const audit = auditVisits(list, todayN);
     const onSched = new Set(schedule.weekdays);
     const attendedDates = list
-      .map((v) => ({ n: v.date.n, hours: v.hours, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
+      .map((v) => ({ n: v.date.n, hours: v.hours, marker: v.marker, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, planInfo, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over, audit,
+      plan, planInfo, schedule, schedules, months, ledger, rec, flags, notes, current, attendedDates, over, audit,
       // Held right now, which is what the On hold list means. Driven by the current
       // month rather than roster status, so a hold entered by hand lands on the list.
       onHold: current ? current.onHold : !!(rec && rec.onHold),
@@ -1580,59 +1662,12 @@ function wasAnswered(key, id) {
   return !!(rec && rec.answered.includes(id));
 }
 
-function gapLooksLikeAHold(student, mo) {
-  // A hold usually lines up with month boundaries: they attend to the end of the previous
-  // month, vanish for exactly this one, and come back at the start of the next. A holiday
-  // is raggeder than that. This is a guess and is labelled as one.
-  const first = mkDate(mo.y, mo.m, 1).n;
-  const last = mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n;
-  const before = student.attendedDates.filter((v) => v.n < first).map((v) => v.n);
-  const after = student.attendedDates.filter((v) => v.n > last).map((v) => v.n);
-  if (!before.length || !after.length) return false;
-  const endedLate = last - Math.max(...before) <= 38;
-  const resumedEarly = Math.min(...after) - last <= 10;
-  return endedLate && resumedEarly;
-}
-
 function buildQuestions(rep) {
   const out = [];
   for (const s of rep.students) {
-    // 1. A whole month with nothing recorded that the data could not explain.
-    for (const mo of s.months) {
-      if (!mo.absentWholeMonth || mo.basis !== UNVERIFIABLE) continue;
-      const mk = monthKey(mo.y, mo.m);
-      const id = "absent:" + mk;
-      if (wasAnswered(s.key, id) || (s.over && isHeld(s.over, mk))) continue;
-      const likelyHold = gapLooksLikeAHold(s, mo);
-      // 'Not enrolled' only differs from 'on hold' when the hold would keep running, and a
-      // hold closes the moment an export shows the student enrolled. So for anyone the
-      // roster already reads as Enrolled the two answers are identical, and offering both
-      // is asking a question with one answer wearing two labels.
-      const offerNotEnrolled = !(s.rec && s.rec.status.toLowerCase() === "enrolled");
-      out.push({
-        cat: likelyHold ? "hold" : "absent",
-        key: s.key, id, who: s.display,
-        ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
-             "That is assumed to be a hold, so nothing is owed for it. Is that right?" +
-             (offerNotEnrolled
-               ? " On hold also covers every month after this one until an export shows them enrolled again; not enrolled applies to " + mo.label + " on its own."
-               : ""),
-        options: [
-          { label: "Yes, on hold", suggest: true, apply: () => {} },
-          { label: "Still on hold now", apply: () => {
-              ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
-          { label: "On hold — pick the months", datesPicker: true,
-            defaultMonth: mk,
-            defaultFrom: fmt(fromDayNumber(mkDate(mo.y, mo.m, 1).n)),
-            defaultTo: fmt(fromDayNumber(mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n)) },
-          { label: "No — enrolled and absent, charge " + s.plan + " hrs", apply: () => {
-              ovFor(s.key, true).charged.push(mk); } },
-        ].concat(offerNotEnrolled
-          ? [{ label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
-                ovFor(s.key, true).notEnrolled.push(mk); } }]
-          : []),
-      });
-    }
+    // A whole month with nothing recorded is not asked about any more (25 Oct 2026): it
+    // is taken as a hold or a break, nothing is owed, and the student's details have a
+    // button to charge it instead.
 
     // 2. Stopped partway through an elapsed month and never came back.
     const elapsed = s.months.filter((mo) => !mo.isCurrent);
@@ -1714,10 +1749,9 @@ function buildQuestions(rep) {
       }
     }
   }
-  // Grouped so a person can work through one kind of answer at a time - the Radius hold
-  // screen open for the hold batch, then the rest - instead of context-switching per
-  // student. Likely holds first because they are the cheapest to confirm.
-  const ORDER = ["hold", "absent", "stopped", "plan", "schedule"];
+  // Grouped so a person can work through one kind of answer at a time instead of
+  // context-switching per student.
+  const ORDER = ["stopped", "plan", "schedule"];
   out.sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.who.localeCompare(b.who));
   return out;
 }
@@ -1735,8 +1769,6 @@ function saveHoldDates(key, from, to) {
 }
 
 const QUEUE_HEADINGS = {
-  hold: "Looks like a hold — the Radius hold screen can confirm these",
-  absent: "A whole month with no attendance",
   stopped: "Stopped attending partway through a month",
   plan: "What the plan number means",
   schedule: "Schedules that had to be guessed",
@@ -1753,30 +1785,12 @@ function auditOptions(e) {
     const rec = ovFor(e.key, true);
     for (const [mk, d] of deltas) rec.hourAdjust[mk] = (rec.hourAdjust[mk] || 0) + d;
   } });
-  if (e.kind === "off-hours") {
-    return [check("Real session or makeup at that time"), check("Typo - I will fix it in Radius")];
-  }
   if (e.kind === "future") {
     return [check("Wrong date - I will fix it in Radius")];
   }
   if (e.kind === "duplicate") {
     return [check("Both entries really happened"),
             adjust("Duplicate - ignore " + e.hours + " hr(s)", [[e.mk, -e.hours]])];
-  }
-  if (e.kind === "folded") {
-    const prior = report.span
-      .map(([y, m]) => monthKey(y, m))
-      .filter((mk) => mkIndex(mk) < mkIndex(e.mk));
-    const opts = [check("Real long session, all in this month"),
-                  check("1 hr was a makeup for this same month")];
-    for (const mk of prior.slice(-2)) {
-      opts.push(adjust("1 hr was a makeup for " + monthLabel(mk), [[e.mk, -1], [mk, 1]]));
-    }
-    return opts;
-  }
-  if (e.kind === "heavy-month") {
-    return [check("Real - the extra hours pay older debt"),
-            adjust("Double-logged - remove " + e.hours + " hr(s)", [[e.mk, -e.hours]])];
   }
   return [check("Checked")];
 }
@@ -1789,8 +1803,10 @@ function renderAudit() {
       if (!checked.includes(a.id)) entries.push({ who: s.display, ...a });
     }
   }
-  const totalChecked = report.students.reduce((n, s) =>
-    n + (((s.over && s.over.auditChecked) || []).length), 0);
+  const totalChecked = report.students.reduce((n, s) => {
+    const checked = (s.over && s.over.auditChecked) || [];
+    return n + s.audit.filter((a) => checked.includes(a.id)).length;
+  }, 0);
   const scoped = focusKey ? entries.filter((e) => e.key === focusKey) : entries;
   scoped.sort((a, b) => a.who.localeCompare(b.who) || ((a.date ? a.date.n : 0) - (b.date ? b.date.n : 0)));
   const panel = el("auditPanel");
@@ -1809,7 +1825,7 @@ function renderAudit() {
   const groups = [...byStudent.entries()];
   const flat = [];
   el("auditTitle").textContent = scoped.length + " attendance entr" + (scoped.length === 1 ? "y" : "ies") +
-    " look odd, across " + groups.length + " student" + (groups.length === 1 ? "" : "s") +
+    " cannot be right as logged, across " + groups.length + " student" + (groups.length === 1 ? "" : "s") +
     (totalChecked ? " · " + totalChecked + " checked" : "");
   el("auditList").innerHTML = groups.slice(0, 25).map(([who, list]) =>
     '<div class="q"><div class="who">' + esc(who) + ' <span class="pill mute">' + list.length + "</span></div>" +
@@ -1839,7 +1855,8 @@ function renderQueue() {
   queue = buildQuestions(report);
   if (focusKey) queue = queue.filter((q) => q.key === focusKey);
   const panel = el("queuePanel");
-  const anyAnswers = Object.keys(overrides.students).length > 0;
+  const answeredCount = Object.keys(overrides.students).filter((k) => recCanon(overrides.students[k]) !== undefined).length;
+  const anyAnswers = answeredCount > 0;
   panel.hidden = !queue.length && !anyAnswers && !focusKey;
   if (panel.hidden) {
     // Clear as well as hide. Leaving the old questions in the DOM means a later unhide
@@ -1852,7 +1869,7 @@ function renderQueue() {
     ? queue.length + " thing" + (queue.length === 1 ? "" : "s") + " the exports could not tell me"
     : focusKey ? "Nothing to confirm for this student" : "Nothing left to confirm";
   el("queueSub").textContent = anyAnswers
-    ? "· " + Object.keys(overrides.students).length + " student(s) have saved answers"
+    ? "· " + answeredCount + " student(s) have saved answers"
     : "";
 
   const list = el("queueList");
@@ -1865,7 +1882,8 @@ function renderQueue() {
 
   let lastCat = null;
   list.innerHTML = queue.slice(0, 40).map((q, i) =>
-    (q.cat !== lastCat ? '<div class="qhead">' + esc(QUEUE_HEADINGS[(lastCat = q.cat)] || "") + "</div>" : "") +
+    (q.cat !== lastCat ? '<div class="qhead">' + esc(QUEUE_HEADINGS[(lastCat = q.cat)] || "") +
+      " (" + queue.filter((x) => x.cat === q.cat).length + ")</div>" : "") +
     '<div class="q"><div class="who">' + esc(q.who) + "</div>" +
     '<div class="ask">' + esc(q.ask) + "</div>" +
     '<div class="opts">' + q.options.map((o, j) =>
@@ -2084,10 +2102,19 @@ function detailFor(s) {
     const ms = s.schedules[mo.y + "-" + mo.m];
     let line = "<b>" + esc(mo.shortLabel) + "</b>: " + esc(mo.attended) + " of " + esc(mo.required) + " hrs";
     if (ms && scheduleLabel(ms) !== scheduleLabel(s.schedule)) line += " &middot; schedule " + esc(scheduleLabel(ms));
-    if (mo.markerHours) line += " &middot; " + mo.markerHours + " hr(s) redeemed at 12 AM";
+    if (mo.markerHours) line += " &middot; " + mo.markerHours + " makeup hr(s)";
     if (mo.isCurrent) line += " &middot; projected " + mo.projected + (mo.remaining ? " with " + mo.remaining + " left" : "");
     if (mo.proratedFrom) line += " &middot; prorated from " + fmt(mo.proratedFrom);
     if (mo.note) line += '<br><span style="color:var(--muted)">' + esc(mo.note) + "</span>";
+    // An empty month is taken as a hold or a break without asking; if it was not,
+    // charge it here. And a charged month can be taken back.
+    const mk = monthKey(mo.y, mo.m);
+    if (mo.assumedHold) {
+      line += ' <button class="ghost tiny" data-charge="' + esc(s.key) + '" data-mk="' + mk + '">enrolled and absent: charge ' +
+              esc(mo.planHours) + " hrs</button>";
+    } else if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE && s.over && (s.over.charged || []).includes(mk)) {
+      line += ' <button class="ghost tiny" data-uncharge="' + esc(s.key) + '" data-mk="' + mk + '">undo the charge</button>';
+    }
     return line;
   });
   rows.push("<dt>By month</dt><dd>" + monthLines.join("<br>") + "</dd>");
@@ -2103,6 +2130,7 @@ function detailFor(s) {
     // work. A 2-hour visit is marked too, since it counts double toward the month.
     rows.push("<dt>Came on</dt><dd class=\"dates\">" + s.attendedDates.map((v) => {
       const label = fmtShort(fromDayNumber(v.n)) + (v.hours > 1 ? " (" + v.hours + "h)" : "");
+      if (v.marker) return '<span class="pill mk" title="a makeup: logged at 12 AM or outside session hours">' + label + " makeup</span>";
       return v.onSchedule ? label : '<span class="pill ok" title="off their regular days, counts as makeup">' + label + "</span>";
     }).join(" &middot; ") + "</dd>");
   } else {
@@ -2113,6 +2141,9 @@ function detailFor(s) {
       s.missed.map((n) => fmtShort(fromDayNumber(n))).join(" &middot; ") + "</dd>");
   } else {
     rows.push("<dt>Missed dates</dt><dd style=\"color:var(--muted)\">none</dd>");
+  }
+  if (s.notes && s.notes.length) {
+    rows.push("<dt>Notes</dt><dd>" + s.notes.map((t) => '<div class="note">' + esc(t) + "</div>").join("") + "</dd>");
   }
   if (s.flags.length) {
     rows.push("<dt>Check</dt><dd>" + s.flags.map((f) => '<span class="pill warn">' + esc(f) + "</span>").join(" ") + "</dd>");
@@ -2229,6 +2260,17 @@ function renderTable() {
       const at = list.findIndex((h) => canon(h) === b.dataset.delid);
       if (at === -1) { rerun(); return; }
       list.splice(at, 1);
+      await saveOverrides();
+      rerun();
+    };
+  });
+  wrap.querySelectorAll("button[data-charge], button[data-uncharge]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      const key = b.dataset.charge || b.dataset.uncharge;
+      const rec = ovFor(key, true);
+      if (b.dataset.charge) { if (!rec.charged.includes(b.dataset.mk)) rec.charged.push(b.dataset.mk); }
+      else rec.charged = rec.charged.filter((mk) => mk !== b.dataset.mk);
       await saveOverrides();
       rerun();
     };
@@ -3529,23 +3571,55 @@ function selfCheck() {
   is("marker hours count toward the month", withMarker.attended, 9);
   is("marker hours are remembered separately", withMarker.markerHours, 1);
 
+  // --- session windows: outside them is a makeup ----------------------------------------
+  // 3-9 Aug 2026 runs Monday to Sunday.
+  is("Wed 11 AM is a makeup", isMakeupTime(D(2026, 8, 5).n, 11 * 60), true);
+  is("Wed 2:00 PM is a session", isMakeupTime(D(2026, 8, 5).n, 14 * 60), false);
+  is("Mon 2:30 PM is a makeup (window opens 2:45)", isMakeupTime(D(2026, 8, 3).n, 14 * 60 + 30), true);
+  is("Mon 3:00 PM is a session", isMakeupTime(D(2026, 8, 3).n, 15 * 60), false);
+  is("Mon 7:30 PM is a makeup (window closes 7:15)", isMakeupTime(D(2026, 8, 3).n, 19 * 60 + 30), true);
+  is("Sat 10 AM is a session", isMakeupTime(D(2026, 8, 8).n, 10 * 60), false);
+  is("Sat 2 PM is a makeup", isMakeupTime(D(2026, 8, 8).n, 14 * 60), true);
+  is("Sunday is always a makeup", isMakeupTime(D(2026, 8, 9).n, 15 * 60), true);
+  is("12 AM is a makeup", isMakeupTime(D(2026, 8, 4).n, 0), true);
+  is("no start time is not a makeup", isMakeupTime(D(2026, 8, 4).n, null), false);
+
   // --- plan reading: hours vs sessions ------------------------------------------------
+  // Jun-Aug 2026 with the same plan every month, today in August.
+  const rp = (raw, list, pinned) => {
+    const sp = [[2026, 6], [2026, 7], [2026, 8]];
+    return resolvePlan(sp.map(() => raw), sp, list, 2026, 8, pinned || null);
+  };
   const twoHourFull = [];
   for (let mm = 6; mm <= 7; mm++) for (let w = 0; w < 4; w++) twoHourFull.push(visit(2026, mm, 3 + w * 7, 2, 4));
   is("4/month at 2 hr sessions delivering 8 -> sessions",
-     [resolvePlan(4, twoHourFull, 2026, 8, null).hours, resolvePlan(4, twoHourFull, 2026, 8, null).reading], [8, "sessions"]);
+     [rp(4, twoHourFull).hours, rp(4, twoHourFull).reading], [8, "sessions"]);
   const eightPlanTwoHour = twoHourFull.map((v) => Object.assign({}, v, { spm: 8 }));
   is("8/month at 2 hr sessions delivering 8 -> hours",
-     [resolvePlan(8, eightPlanTwoHour, 2026, 8, null).hours, resolvePlan(8, eightPlanTwoHour, 2026, 8, null).reading], [8, "hours"]);
+     [rp(8, eightPlanTwoHour).hours, rp(8, eightPlanTwoHour).reading], [8, "hours"]);
   const oneHour = [];
   for (let w = 0; w < 4; w++) oneHour.push(visit(2026, 7, 6 + w * 7, 1, 8));
-  is("1 hr sessions are never ambiguous", resolvePlan(8, oneHour, 2026, 8, null).certain, true);
+  is("1 hr sessions are never ambiguous", rp(8, oneHour).certain, true);
   const thin = [visit(2026, 7, 7, 2, 4)];
-  is("one month of history is uncertain and defaults to hours",
-     [resolvePlan(4, thin, 2026, 8, null).hours, resolvePlan(4, thin, 2026, 8, null).certain], [4, false]);
-  is("a pinned answer wins", resolvePlan(4, thin, 2026, 8, "sessions").hours, 8);
+  is("one visit is too little to tell, and defaults to hours",
+     [rp(4, thin).hours, rp(4, thin).certain], [4, false]);
+  is("a pinned answer wins", rp(4, thin, "sessions").hours, 8);
   const markedOnly = twoHourFull.concat([Object.assign(visit(2026, 6, 20, 4, 4), { marker: true })]);
-  is("markers stay out of the plan evidence", resolvePlan(4, markedOnly, 2026, 8, null).hours, 8);
+  is("markers stay out of the plan evidence", rp(4, markedOnly).hours, 8);
+  // One completed month, but a steady weekly pattern: decided from that.
+  const sepOct = [[2026, 9], [2026, 10]];
+  const weeklyTwoHour = [visit(2026, 9, 16, 2, 8), visit(2026, 9, 23, 2, 8), visit(2026, 10, 7, 2, 8), visit(2026, 10, 14, 2, 8)];
+  const fromWeeks = resolvePlan([8, 8], sepOct, weeklyTwoHour, 2026, 10, null);
+  is("8/month, one 2-hr session a week: hours, from the weekly pattern",
+     [fromWeeks.hours, fromWeeks.certain, fromWeeks.source], [8, true, "weekly"]);
+  const fourPlan = weeklyTwoHour.map((v) => Object.assign({}, v, { spm: 4 }));
+  const fromWeeks4 = resolvePlan([4, 4], sepOct, fourPlan, 2026, 10, null);
+  is("4/month, one 2-hr session a week: sessions = 8 hrs, from the weekly pattern",
+     [fromWeeks4.hours, fromWeeks4.reading], [8, "sessions"]);
+  // The plan each month is that month's own.
+  const changing = [visit(2026, 7, 6, 1, 8), visit(2026, 9, 7, 1, 12)];
+  is("each month keeps its own plan; a month with none keeps the one before",
+     monthlyPlans(changing, [[2026, 6], [2026, 7], [2026, 8], [2026, 9]]), { plans: [8, 8, 8, 12], own: [0, 8, 0, 12] });
 
   // --- the attendance audit ------------------------------------------------------------
   const av = (y, mth, d, hours, start, marker) =>
@@ -3561,13 +3635,54 @@ function selfCheck() {
     av(2026, 8, 7, 1, 15 * 60),
     av(2026, 8, 25, 1, 15 * 60),         // future (today is the 19th)
   ];
-  is("audit finds exactly the odd ones",
-     auditVisits(oddball, 1, D(2026, 8, 19).n).map((e) => e.kind).sort(),
-     ["duplicate", "folded", "future", "off-hours", "off-hours"]);
-  is("a heavy month with no markers is flagged", auditMonth("t", "July 2026", 8, 12, 0, false).kind, "heavy-month");
-  is("markers explain a heavy month", auditMonth("t", "July 2026", 8, 12, 4, false), null);
-  is("a merely busy month is not flagged", auditMonth("t", "July 2026", 8, 10, 0, false), null);
-  is("held months are never heavy", auditMonth("t", "July 2026", 0, 12, 0, true), null);
+  is("audit lists only duplicates and future dates",
+     auditVisits(oddball, D(2026, 8, 19).n).map((e) => e.kind).sort(),
+     ["duplicate", "future"]);
+
+  // --- a small report, end to end ------------------------------------------------------
+  // Made-up students, today 20 Oct 2026: one coming 12 hrs a month on an 8 plan, one whose
+  // plan changed in Radius, one with an empty August and an 11 AM makeup, and two pairs of
+  // roster records sharing a name.
+  const rowsA = [], rowsR = [];
+  const row = (first, last, y, mth, d, mins, spm, time) => rowsA.push({ "Attendance Date": mth + "/" + d + "/" + y + " " + (time || "3:30 PM"),
+    "First Name": first, "Last Name": last, "Duration (Minutes)": String(mins), "Sessions Per Month": String(spm) });
+  const person = (first, last, status) => rowsR.push({ "First Name": first, "Last Name": last, "Enrollment Status": status,
+    "Student Id": first + last + status, "Enrollment Start Date": "6/1/2026", "Enrollment End Date": "", "Last Attendance Date": "" });
+  for (const mth of [7, 8, 9, 10]) {
+    let n = 0;
+    for (let d = 1; d <= 28 && n < 12; d++) {
+      const wd = weekdayOf(D(2026, mth, d).n);
+      if (wd > 2 || (mth === 10 && d > 19)) continue;
+      row("Selfcheck", "Busy", 2026, mth, d, 60, 8);
+      row("Selfcheck", "Changed", 2026, mth, d, 60, mth >= 9 ? 12 : 8);
+      if (mth !== 8) row("Selfcheck", "Gap", 2026, mth, d, 60, 8);
+      n++;
+    }
+  }
+  row("Selfcheck", "Gap", 2026, 9, 2, 60, 8, "11:00 AM");
+  person("Selfcheck", "Busy", "Enrolled");
+  person("Selfcheck", "Changed", "Enrolled");
+  person("Selfcheck", "Gap", "Enrolled");
+  person("Selfcheck", "Gap", "Inactive");
+  person("Selfcheck", "Twin", "Enrolled");
+  person("Selfcheck", "Twin", "Enrolled");
+  const savedOverrides = overrides;
+  overrides = { version: 1, students: {} };
+  let mini;
+  try { mini = buildReport({ records: rowsA }, { records: rowsR }, D(2026, 10, 20).n); }
+  finally { overrides = savedOverrides; }
+  const kid = (last) => mini.students.find((x) => x.key === nameKey("Selfcheck", last));
+  is("12 hrs a month on an 8 plan for 3 months: noted as likely 12",
+     kid("Busy").notes.some((t) => /Likely on a 12\/month plan/.test(t)), true);
+  is("a plan change in Radius is noted as such",
+     kid("Changed").notes.some((t) => /Plan changed in Radius from 8 to 12\/month in September 2026/.test(t)), true);
+  is("the changed plan counts from its month on", kid("Changed").months.slice(0, 3).map((mo) => mo.required), [8, 8, 12]);
+  is("an empty month is taken as a hold, not asked about",
+     [kid("Gap").months[1].assumedHold, buildQuestions(mini).filter((q) => q.key === nameKey("Selfcheck", "Gap") && /absent|hold/.test(q.id)).length],
+     [true, 0]);
+  is("an 11 AM visit is counted as a makeup", kid("Gap").months[2].markerHours, 1);
+  is("an old record under the same name is not a clash", kid("Gap").flags.some((f) => /two Enrolled/.test(f)), false);
+  is("two Enrolled records under one name are", mini.warnings.some((w) => /^1 name\(s\) belong to more than one Enrolled/.test(w)), true);
 
   // --- exact hold dates -----------------------------------------------------------------
   is("month-aligned dates become a month hold",

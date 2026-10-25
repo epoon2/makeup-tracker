@@ -26,6 +26,12 @@ date it found so it is clear how current the numbers are.
 **Monthly requirement** is the `Sessions Per Month` value on the student's attendance rows,
 counted in **hours**: 4, 8, or 12. A 120-minute visit counts as 2 hours.
 
+**Each month uses its own plan.** The plan for a month is the `Sessions Per Month` on that
+month's rows (the latest row wins). A month with no rows keeps the month before's plan.
+So a plan changed in Radius from 8 to 12 in September counts as 8 for July and August and
+12 from September, and a student's current plan is never applied backwards. The
+student's panel notes the change.
+
 **Durations round to the nearest whole hour.** 56 minutes is 1 hour, 115 minutes is 2 hours.
 Rows that round down to 0 hours are ignored entirely — they earn no credit and are not used
 to infer a schedule.
@@ -44,29 +50,58 @@ closed, still inside the two-month grace: hours the student is entitled to book.
 *Hrs to book now* is what the current month is still short after projecting the
 sessions left in it, so it shrinks on its own as they attend.
 
-**A month with no attendance at all is assumed to be a hold.** Charging a full plan
-for a month nobody attended manufactures makeup hours nobody will ever book, and at
-this centre an empty month is nearly always a hold. Nothing is owed for it, the
-review queue still asks, and answering "enrolled and absent" charges the full plan
-for that month instead.
+**A month with no attendance at all is taken as a hold or a break.** Charging a full
+plan for a month nobody attended manufactures makeup hours nobody will ever book, and
+at this centre an empty month is nearly always a hold or a break.
+- Nothing is owed for it, and the review queue does not ask about it.
+- If a student really was enrolled and absent, the month's line in their panel has a
+  button to charge it, and an **undo**.
 
 **Missed sessions are netted within each week.** Schedules drift: a Tue/Thu student
 who comes Monday and Wednesday one week has moved their sessions, not missed them. A
 week counts as short only by how many fewer sessions were attended than scheduled,
 and the earliest scheduled days are the ones forgiven.
 
-**A 12:00 AM entry is a makeup-redemption marker, never a real session** (real sessions run
-1:30–7:30 pm). Its hours credit the month it is dated in, exactly like any other hours, but
-it is not treated as evidence of the student's weekly schedule. The report says how many of
-a month's hours arrived this way. Hours already attended in the current month that exceed
-the month's requirement pay old debt immediately, so a makeup redeemed today clears the
-old month today.
+**A visit outside the session windows is a makeup, never a regular session.** The
+windows, all year round:
+
+| Days | Start times |
+|---|---|
+| Mon, Tue, Thu, Fri | 2:45–7:15 PM |
+| Wed | 1:45–7:15 PM |
+| Sat | 8:45 AM–1:15 PM |
+| Sun | closed, so any visit is a makeup |
+
+- The 12:00 AM marker is the most common makeup entry.
+- A makeup's hours credit the month it is dated in, like any other hours.
+- Makeups are not evidence of the weekly schedule or of what the plan means, and they
+  are never flagged as odd.
+- The student's panel tags them "makeup" and says how many of each month's hours were
+  makeups.
+- Hours attended in the current month beyond its requirement pay old debt immediately,
+  so a makeup redeemed today clears the old month today.
 
 **A plan number can mean hours or sessions.** For students whose sessions run 2 hours, a
 plan of 4 sometimes means 4 sessions × 2 hours = 8 hours a month, and the plan cannot
-always be changed in Radius because it is tied to billing. The tool infers which reading
-fits from what full months actually delivered, flags the students it reinterpreted, and
-asks in the review queue when the history is too thin to tell. The answer is remembered.
+always be changed in Radius because it is tied to billing. The tool reads it from what the
+student attends:
+- With two or more completed months, it compares what those months delivered.
+- With fewer, it uses their weekly pattern: one 2-hour session a week is about 8.7 hours
+  a month, so it is 8 hours, not 8 two-hour sessions.
+
+It asks in the review queue only when neither can tell. The answer is remembered.
+
+**A student coming at the next plan level is noted, not flagged.** Extra hours are not a
+problem: they pay older debt. But if a student's regular (non-makeup) hours reach the next
+plan level (8 on a 4, 12 on an 8) for each of the last three completed months, their panel
+says they are likely on that plan. The note is inferred from attendance, and it disappears
+as soon as a month drops back. A plan change that Radius itself shows is noted at once, as
+confirmed.
+
+**Names.** A student who left and re-enrolled has old roster records under the same name.
+The tracker uses the live one without fuss. Two students who share a name are told apart in
+Radius with " *" after the last name ("Jacob Chan *"), which the tracker treats as a
+different name. It warns only when two **Enrolled** records have exactly the same name.
 
 ### How to log makeups so the numbers stay exact
 
@@ -157,12 +192,15 @@ and Enter to choose, Escape to clear.
 
 ## The review queue
 
-The queue is grouped by kind of question, so the answers can be batched: suspected
-holds first (with the Radius hold screen open beside it), then unexplained absent
-months, students who stopped partway, plan readings, and guessed schedules last.
-A hold can be answered with its exact dates — "On hold — enter the dates" takes the
-start and end dates straight off the Radius hold screen — or left open-ended for a
-student still on hold, which closes itself when a later export shows them enrolled.
+The queue is grouped by kind of question, with a count for each kind, so the answers
+can be batched:
+- students who stopped partway through last month;
+- plan readings that could not be worked out;
+- guessed schedules.
+
+Empty months are no longer asked about (see the rules). A hold can be answered with its
+exact dates: "On hold — pick the months" takes the start and end straight off the Radius
+hold screen.
 Holds are entered as whole months by default — two dropdowns, which is how Radius
 holds almost always run — with an "exact dates" toggle for the rare hold that starts
 or ends mid-month. A mid-month hold is kept exact and the partly held month's
@@ -177,33 +215,24 @@ or when a student's schedule changes and an old hand-set schedule no longer fits
 
 ## Attendance worth checking
 
-A separate panel lists entries that look odd, for a person to verify in Radius. It
-flags entries starting before 8 am, or before the 1:30 pm weekday opening (weekend
-mornings are normal hours), identical duplicate entries on the same date and time,
-2-hour entries for students whose sessions run 1 hour (the folded-makeup pattern the
-12 AM convention replaces), entries dated in the future, and months running well past
-their requirement with no 12 AM markers to explain it.
+A separate panel lists only entries that cannot be right as logged, for a person to fix in
+Radius:
+- identical duplicate entries on the same date and time;
+- entries dated in the future.
 
-Each finding is answerable. Confirming "real" marks it checked and it stops
-appearing. Confirming a problem corrects the numbers: a duplicate's hours are
-ignored, a double-logged heavy month is reduced, and a folded makeup hour is moved
-into the month it actually belongs to. Corrections are stored with the other saved
-answers, export and import with them, and are applied as per-month hour adjustments
-that flow through the requirement, the missed dates, and the FIFO ledger.
+Visits outside session hours are makeups, not oddities. A month with extra hours is not a
+problem. And 2-hour entries for 1-hour students count either way. None of these are listed
+any more.
 
+Each finding is answerable:
+- Confirming it marks it checked.
+- Marking a duplicate ignores its hours. That correction is stored with the other saved
+  answers and flows through the requirement, the missed dates and the FIFO ledger.
 
-The tool asks rather than waiting to be told. Everything it had to guess becomes a
-question with the likely answer marked:
+The other questions the tool asks rather than guessing, each with the likely answer marked:
 
-- **A whole month with no attendance.** On hold, enrolled and absent, or not enrolled?
-  The hold option is marked likely when the gap lines up with month boundaries, since a
-  hold usually does and a holiday usually does not.
-  **Not enrolled is only offered when it would actually differ from on hold.** Both owe
-  nothing for the month picked; the only difference is that a hold also covers every later
-  month until an export shows the student enrolled again. Since a hold closes the moment
-  such an export arrives, the two are identical for anyone the roster already reads as
-  Enrolled, so that option is hidden there rather than presented as a real choice.
 - **Stopped partway through a month.** Away and still owing, or on hold from then?
+- **What the plan number means**, when neither the months nor the weekly pattern can tell.
 - **A guessed schedule.** Confirm the inferred days, take the days seen this month, or
   pick them by hand. This is the highest-leverage answer, since the schedule drives both
   missed dates and the current-month projection.

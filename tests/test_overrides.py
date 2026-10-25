@@ -107,23 +107,51 @@ def test_plan_reading_infers_sessions_and_honours_the_pin():
     from reference.report import resolve_plan
 
     today = dt.date(2026, 8, 19)
+    span = [(2026, 6), (2026, 7), (2026, 8)]
+
+    def rp(raw, visits, pinned=None):
+        return resolve_plan([raw] * len(span), span, visits, today, pinned)
+
     two_hour = [Visit("t", dt.date(2026, 6 + m, 3 + 7 * w), 2, 4) for m in (0, 1) for w in range(4)]
-    inferred = resolve_plan(4, two_hour, today, None)
+    inferred = rp(4, two_hour)
     assert (inferred["hours"], inferred["reading"]) == (8, "sessions")
 
     # An 8/month plan delivering 8 hours as 2-hour entries stays an hours plan.
-    kept = resolve_plan(8, two_hour, today, None)
+    kept = rp(8, two_hour)
     assert (kept["hours"], kept["reading"]) == (8, "hours")
 
     # Too little history: uncertain, defaults to hours, and a pin decides it.
     thin = [Visit("t", dt.date(2026, 7, 7), 2, 4)]
-    unsure = resolve_plan(4, thin, today, None)
+    unsure = rp(4, thin)
     assert (unsure["hours"], unsure["certain"]) == (4, False)
-    assert resolve_plan(4, thin, today, "sessions")["hours"] == 8
+    assert rp(4, thin, "sessions")["hours"] == 8
 
     # Marker hours are redemptions, not plan evidence.
     marked = two_hour + [Visit("t", dt.date(2026, 6, 20), 4, 4, marker=True)]
-    assert resolve_plan(4, marked, today, None)["hours"] == 8
+    assert rp(4, marked)["hours"] == 8
+
+
+def test_one_month_and_a_steady_week_is_enough_to_read_the_plan():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.report import resolve_plan
+
+    span = [(2026, 9), (2026, 10)]
+    weekly = [Visit("t", dt.date(2026, 9, 16), 2, 8), Visit("t", dt.date(2026, 9, 23), 2, 8),
+              Visit("t", dt.date(2026, 10, 7), 2, 8), Visit("t", dt.date(2026, 10, 14), 2, 8)]
+    eight = resolve_plan([8, 8], span, weekly, dt.date(2026, 10, 20), None)
+    assert (eight["hours"], eight["certain"], eight["source"]) == (8, True, "weekly")
+    four = resolve_plan([4, 4], span, [Visit(v.key, v.date, v.hours, 4) for v in weekly], dt.date(2026, 10, 20), None)
+    assert (four["hours"], four["reading"]) == (8, "sessions")
+
+
+def test_each_month_keeps_its_own_plan():
+    import datetime as dt
+    from reference.loaders import Visit
+    from reference.report import monthly_plans
+
+    visits = [Visit("t", dt.date(2026, 7, 6), 1, 8), Visit("t", dt.date(2026, 9, 7), 1, 12)]
+    assert monthly_plans(visits, [(2026, 6), (2026, 7), (2026, 8), (2026, 9)]) == ([8, 8, 8, 12], [0, 8, 0, 12])
 
 
 def test_plan_reading_round_trips_through_serialisation():

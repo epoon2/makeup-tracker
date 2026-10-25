@@ -42,6 +42,8 @@ function exportsRows() {
                    "Last Attendance Date", "Center", "Address", "Date of Birth", "Medical Notes"]];
   const today = new Date();
   const until = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate() - 2));
+  // Students who stopped coming early in last month: each one is a question in the queue.
+  const stopAt = new Date(Date.UTC(today.getFullYear(), today.getMonth() - 1, 8));
   for (let i = 0; i < 24; i++) {
     const first = "Test", last = "Student" + String.fromCharCode(65 + i);
     const days = i % 2 ? [1, 3] : [2, 4]; // Tue/Thu or Wed/Fri, getUTCDay numbering
@@ -52,6 +54,7 @@ function exportsRows() {
       if (i < 3 && m === 9) continue;                    // a whole month away: a hold question
       if (i >= 3 && i < 9 && d.getUTCDate() % 7 === 0) continue; // the odd missed session
       if (i === 23) continue;                            // enrolled, never attended
+      if (i >= 9 && i < 15 && d > stopAt) continue;      // stopped partway through last month
       attendance.push([m + "/" + d.getUTCDate() + "/" + d.getUTCFullYear() + " 3:30 PM", first, last, 60, 8, "L" + i, "Temple City", "made up"]);
       lastSeen = m + "/" + d.getUTCDate() + "/" + d.getUTCFullYear();
     }
@@ -281,6 +284,7 @@ try {
   await admin.click("#closeAccounts");
 
   // --- an answer made while signed out is kept and saved on signing back in --------------
+  const beforeExpiry = await fromSite.answers(admin);
   await mariaCtx.clearCookies();
   await maria.locator("#queueList button[data-o=\"skip\"]").first().click();
   await maria.waitForSelector("#authPanel:not([hidden])");
@@ -291,8 +295,8 @@ try {
   await maria.waitForFunction(() => /Last saved by maria/.test(document.getElementById("syncNote").textContent) &&
                                      !document.getElementById("results").hidden);
   const storedAfter = await fromSite.answers(admin);
-  check("and the answer given meanwhile reaches the site", Object.keys(storedAfter.answers.students).length === Object.keys(stored.answers.students).length + 1,
-        { before: Object.keys(stored.answers.students).length, after: Object.keys(storedAfter.answers.students).length });
+  check("and the answer given meanwhile reaches the site", Object.keys(storedAfter.answers.students).length === Object.keys(beforeExpiry.answers.students).length + 1,
+        { before: Object.keys(beforeExpiry.answers.students).length, after: Object.keys(storedAfter.answers.students).length });
 
   // --- signing out ---------------------------------------------------------------------
   await maria.click("#signOut");

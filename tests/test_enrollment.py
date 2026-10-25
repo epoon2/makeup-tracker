@@ -97,29 +97,37 @@ def test_marker_hours_credit_their_month_and_are_reported():
 
 def test_audit_flags_the_odd_entries_and_nothing_else():
     import datetime as dt
-    from reference.audit import audit_month, audit_visits
+    from reference.audit import audit_visits
     from reference.loaders import Visit
 
     today = dt.date(2026, 8, 19)
     clean = Visit("t", dt.date(2026, 8, 4), 1, 8, start_minutes=15 * 60)
     marker = Visit("t", dt.date(2026, 7, 28), 1, 8, start_minutes=0, marker=True)
-    off = Visit("t", dt.date(2026, 8, 5), 1, 8, start_minutes=11 * 60)       # Wed morning
-    sat_ok = Visit("t", dt.date(2026, 8, 8), 1, 8, start_minutes=10 * 60)  # Sat morning: normal
-    sat_dawn = Visit("t", dt.date(2026, 8, 8), 1, 8, start_minutes=6 * 60) # 6 AM: odd anywhere
-    late = Visit("t", dt.date(2026, 8, 6), 2, 8, start_minutes=18 * 60)    # ends 8 pm: drift, not flagged
+    off = Visit("t", dt.date(2026, 8, 5), 1, 8, start_minutes=11 * 60, marker=True)  # a makeup now
+    long_one = Visit("t", dt.date(2026, 8, 6), 2, 8, start_minutes=18 * 60)  # 2 hrs: counts, not flagged
     dup_a = Visit("t", dt.date(2026, 8, 7), 1, 8, start_minutes=15 * 60)
     dup_b = Visit("t", dt.date(2026, 8, 7), 1, 8, start_minutes=15 * 60)
     future = Visit("t", dt.date(2026, 8, 25), 1, 8, start_minutes=15 * 60)
 
-    kinds = sorted(e.kind for e in audit_visits(
-        [clean, marker, off, sat_ok, sat_dawn, late, dup_a, dup_b, future], 1, today))
-    # `late` only trips the folded check now; ends past 7:30 are check-in drift
-    assert kinds == ["duplicate", "folded", "future", "off-hours", "off-hours"]
+    kinds = sorted(e.kind for e in audit_visits([clean, marker, off, long_one, dup_a, dup_b, future], today))
+    assert kinds == ["duplicate", "future"]
 
-    assert audit_month("t", "July 2026", 8, 12, 0, False).kind == "heavy-month"
-    assert audit_month("t", "July 2026", 8, 12, 4, False) is None   # markers explain it
-    assert audit_month("t", "July 2026", 8, 10, 0, False) is None   # under the threshold
-    assert audit_month("t", "July 2026", 0, 12, 0, True) is None    # held month
+
+def test_session_windows_decide_what_is_a_makeup():
+    import datetime as dt
+    from reference.loaders import is_makeup_time
+
+    mon, wed, sat, sun = dt.date(2026, 8, 3), dt.date(2026, 8, 5), dt.date(2026, 8, 8), dt.date(2026, 8, 9)
+    assert is_makeup_time(wed, 11 * 60) is True          # before the 1:45 PM Wednesday window
+    assert is_makeup_time(wed, 14 * 60) is False
+    assert is_makeup_time(mon, 14 * 60 + 30) is True     # before 2:45 PM
+    assert is_makeup_time(mon, 15 * 60) is False
+    assert is_makeup_time(mon, 19 * 60 + 30) is True     # after 7:15 PM
+    assert is_makeup_time(sat, 10 * 60) is False
+    assert is_makeup_time(sat, 14 * 60) is True
+    assert is_makeup_time(sun, 15 * 60) is True          # closed Sunday
+    assert is_makeup_time(mon, 0) is True                # the 12 AM marker
+    assert is_makeup_time(mon, None) is False
 
 
 def test_an_empty_bracketed_month_is_assumed_to_be_a_hold():

@@ -5,7 +5,9 @@ sys.path.insert(0, ".")
 from reference.loaders import load
 from reference.report import build
 
-TODAY = "2026-08-20"
+import os
+# Pinned for the 8/20 baseline exports; PARITY_TODAY overrides it (e.g. for tests/synthetic_exports.mjs).
+TODAY = os.environ.get("PARITY_TODAY", "2026-08-20")
 
 async def js():
     async with async_playwright() as p:

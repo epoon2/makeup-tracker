@@ -53,10 +53,26 @@ audit list appeared. The audit's 110 "folded" entries are 2-hour entries for stu
 whose sessions run 1 hour: the pre-convention attached-makeup pattern, listed for a
 person to reconcile, not auto-corrected.
 
+## The 25 Oct 2026 rule changes move these numbers
+
+Not re-run on real exports yet; regenerate this file on the next run and record what moved.
+What will move, and why:
+
+- **Makeups by session window.** Visits outside Mon/Tue/Thu/Fri 2:45-7:15 PM, Wed
+  1:45-7:15 PM, Sat 8:45 AM-1:15 PM (and all Sunday visits) are makeups. They are no
+  longer schedule evidence, so schedules and missed dates for some students change.
+- **Each month uses its own plan** from that month's rows, instead of the first row's
+  plan for every month.
+- **Plan reading** now uses the weekly pattern when there are fewer than two completed
+  months, so fewer plan questions, and some 2-hour students change reading.
+- **The audit lists only duplicates and future dates** (was 142 entries: 110 folded,
+  18 off-hours, 11 heavy months, 3 duplicates).
+- **The queue no longer asks about empty months**, so the 223-question figure drops
+  sharply.
+
 ## Checking it
 
-1. Open `index.html`, click **Run self-check** at the bottom. Expect **105 checks passed**
-   (96 on the rules, 9 on how shared answers are cleaned, sent and merged).
+1. Open `index.html`, click **Run self-check** at the bottom. Expect **121 checks passed**.
 2. Drop both exports, click Run, compare the five cards above.
 3. With Python: `python3 tests/parity_browser.py` must report **0 differing** across all
    students (`TODAY` in that script is pinned to 2026-08-20 for these inputs).
