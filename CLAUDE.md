@@ -81,7 +81,7 @@ both, and into `mergeRecords()` in core.mjs, or it will be dropped on the way to
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
 **Run self-check**. It runs 126 assertions against fixed inputs — rounding, date handling,
-FIFO settlement, hold coverage, absence resolution, schedule inference, the data horizon,
+the judged window and standalone months, hold coverage, absence resolution, schedule inference, the data horizon,
 session windows, plan reading and per-month plans, a small end-to-end report, and how
 shared answers are sent and merged — and needs no exports and no tooling. It takes
 milliseconds.
@@ -143,7 +143,7 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Whole-month absence | 777 | Enrolment decided from evidence, never from current status. |
 | Overrides | 809 | Holds, per-month plans, the hold lifecycle. |
 | Per-month accounting | 864 | Requirement, proration, missed dates, current-month projection. |
-| FIFO settlement | 960 | The two-month grace ledger. |
+| What is owed | 960 | The judged window and the standalone-month shortfalls. |
 | Report assembly | 1011 | Puts a student together and builds the lists. |
 | Review queue | 1139 | Generates questions and applies answers. |
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
@@ -158,8 +158,8 @@ Line numbers drift as soon as you edit. Search for the section title instead.
 card text, the 40-question render cap.
 
 **Change only with the self-check and parity run afterwards:** anything in Dates,
-Normalisation, Schedule inference, Whole-month absence, Per-month accounting, FIFO
-settlement.
+Normalisation, Schedule inference, Whole-month absence, Per-month accounting, What is
+owed.
 
 **If you change a rule, change it in `reference/` too**, or parity will fail — which is the
 system working, not a nuisance.
@@ -181,15 +181,25 @@ plan is never applied backwards. The student's plan column shows the latest.
 
 **Calendar months.**
 
-**Shortfalls carry a two-month grace, paid FIFO** by later excess hours, oldest first. No
-banking forward. Expiry is applied before that month's excess, so a lapsed debt can never
-be paid by hours attended after it lapsed.
+**Only the current month and the two whole months before it are judged** (25 Oct 2026).
+Ethan exports attendance from 1 August 2026 to today every time. On 25 October the judged
+months are Aug, Sep, Oct; on 1 November Aug drops out. Months are whole, never a rolling
+61 days (he confirmed: "on 10/25 judge Aug, Sep, Oct"). Older visits only feed schedule
+inference, `monthlyPlans` and plan reading. `JUDGED_MONTHS_BACK = 2`, `judgedWindow` in
+the page, `judged_window` in `reference/report.py`.
+
+**Each month stands alone** (25 Oct 2026, replacing the FIFO grace ledger). Ethan's golden
+rule: a completed month owes makeup hours only if that month's own hours fell short of its
+plan ("just look at all of their August sessions and see if it meets the minimum
+requirement"). Extra hours in one month never pay another month, and never bank forward.
+`settle` returns one debt per completed, non-held, short month and nothing else. Do not
+reintroduce FIFO or cross-month payment.
 
 **Enrolment dates prorate**, by scheduled sessions rather than calendar days.
 
 **Holds cover whole calendar months only.** Nobody is on hold for half a month. A held
-month owes nothing, but hours attended during it still pay down earlier debt, because
-coming in while on hold is how a student burns off what they owed.
+month owes nothing. Since 25 Oct 2026 hours attended during it no longer pay any other
+month (each month stands alone).
 
 **A hold closes itself** when an export shows the student enrolled again, dated by the
 month that export covers rather than by today. Entered for August, with an export on 3
@@ -220,7 +230,8 @@ wrong sometimes: misclicks and changing schedules are normal, not exceptional.
 hours attended, and any gap granted as makeup hours now.
 
 **Attendance only became reliable from 1 July 2026.** There is no earlier data. Do not
-suggest re-exporting from further back.
+suggest re-exporting from further back. Since 25 Oct 2026 the export Ethan uses starts on
+1 August 2026.
 
 **"Enrolled, never attended" means `Enrollment Status = Enrolled` only.** New and
 Pre-Enrolled were tried and produced mostly false alarms.
@@ -235,7 +246,7 @@ time"). The end is Departure Time (`END_TIME_COLUMNS`), else start + Duration (M
 `is_makeup_time`/`end_minutes_for` in `reference/loaders.py`. Departure Time is one of the
 columns the shared copy keeps (both column lists). A 12:00 AM entry is the commonest case (confirmed 20 Aug 2026:
 12 AM is never legitimate). Makeup ("marker") hours credit the
-month they are dated in but are excluded from schedule inference and from plan-reading
+month they are dated in, and only that month, but are excluded from schedule inference and from plan-reading
 evidence, and are never audited. The centre's logging convention is one logged hour = one delivered hour: a
 makeup attached to a regular session is logged as two entries, the regular hour at its
 real time plus a 1-hour 12 AM marker dated to the month being credited, ideally on the
@@ -263,11 +274,14 @@ same name; the live one is used without a flag. Two students sharing a name are 
 apart in Radius with " *" after the last name ("Jacob Chan *"), a different name here.
 Only two Enrolled records under exactly one name are flagged.
 
-**Hours already attended in the current month pay old debt immediately** — actual hours,
-never the projection, and the current month still never opens a debt of its own.
+**The current month never opens a debt of its own**; its gap shows as hours to book now.
+Its hours do not pay earlier months (that rule, "current-month hours pay old debt
+immediately", ended with FIFO on 25 Oct 2026).
 
-**Makeups are never honored beyond the two-month grace** (confirmed 20 Aug 2026).
-The grace dial stays at 2.
+**Makeups are owed only for the two completed months being judged** (confirmed 20 Aug
+2026 as the two-month grace; kept as the judged window on 25 Oct 2026). A makeup has to be
+dated in the month it makes up. When Radius will not backdate, the tracker cannot tell, and
+that month still shows short.
 
 **Radius has a per-student hold screen with exact start and end dates** (found
 20 Aug 2026; every observed hold is whole calendar months). The queue's hold questions
@@ -282,7 +296,8 @@ ids plus `hourAdjust` per-month deltas in overrides; the deltas are applied to a
 month's attended hours in BOTH engines (`hour_adjust` in `reference/months.py`).
 **Since 25 Oct 2026 it lists only duplicates and future-dated entries.** Off-hours
 entries are makeups now; heavy months and 2-hour entries for 1-hour students were
-dropped at Ethan's request (extra hours are fine; they pay older debt). Earlier
+dropped at Ethan's request (extra hours are fine). The audit only looks at visits inside
+the judged months. Earlier
 `hourAdjust` corrections still apply.
 
 **Holds can be exact dates.** `holdDates` overrides carry mid-month periods; a period
@@ -321,12 +336,16 @@ Per-month inference was measured as the best of several approaches against the 1
 who fully met July, but the ceiling is low. **The review queue is the real fix**: a
 hand-confirmed schedule beats any inference, and answers persist.
 
-**Two months of history is thin.** Debt cannot yet be settled against a later month, so
-the FIFO ledger is mostly idle. It will start doing work as months accumulate.
+**The "likely on a bigger plan" note needs three completed months.** It reads every month
+in the export, so with an export starting 1 August it cannot appear before November.
 
 ---
 
 ## Deploying
+
+**How Ethan deploys:** he uploads through GitHub's web page (Add file → Upload files) onto
+the `development` branch, one commit per update. Hand him a zip of **only the files that
+changed**, each in its folder (e.g. `makeup-tracker/netlify/lib/core.mjs`), and list them.
 
 Push to `main` and Netlify redeploys. Push a branch and Netlify builds a preview at its own
 URL without touching the live site — that is the closest thing to staging, and it needs no

@@ -3,7 +3,7 @@
 Deliberately few checks: a list with false alarms in it stops being read, which is worse
 than no list. Since 25 Oct 2026 it holds only the same entry twice and entries dated in
 the future. Visits outside session hours are makeups (loaders.SESSION_WINDOWS), not
-oddities; extra hours in a month pay older debt and are not a problem; 2-hour entries for
+oddities; extra hours in a month are not a problem; 2-hour entries for
 1-hour students count either way.
 """
 

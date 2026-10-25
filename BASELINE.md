@@ -69,6 +69,18 @@ What will move, and why:
   18 off-hours, 11 heavy months, 3 duplicates).
 - **The queue no longer asks about empty months**, so the 223-question figure drops
   sharply.
+- **Only the current month and the two whole months before it are judged, and each month
+  stands alone.** Owed hours are now each completed month's own shortfall; later excess
+  hours no longer pay earlier months, so owed totals can rise for students who came extra
+  later. Months older than the window (July, once the date passes 1 October) owe nothing
+  and only feed schedules and plans, so owed totals for those drop. The header now reads
+  `Judging <first judged month> – <last attendance> (visits from <export start> help with
+  schedules) · ...`.
+- **The audit only looks at visits inside the judged months.**
+
+With the 8/20 exports evaluated on 20 Aug 2026 the judged months are June (no data), July
+and August, so the window itself changes nothing for that run; only the standalone rule
+does.
 
 ## Checking it
 

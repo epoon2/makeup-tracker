@@ -16,10 +16,11 @@ after it is written.
    Used columns: `Student Id`, `First Name`, `Last Name`, `Enrollment Status`,
    `Enrollment Start Date`, `Enrollment End Date`, `Last Attendance Date`, `Center`.
 
-Attendance was only recorded reliably from **1 July 2026**, so that is the earliest month
-the tool can see and the grace window has less to work with than it will once more months
-accumulate. The export does not need to run up to today; the page shows the last attendance
-date it found so it is clear how current the numbers are.
+Run the attendance export from **1 August 2026** to today each time. The calculator only
+judges the last two whole months and the current one (see *Which months are judged*);
+anything older in the export is used only to read schedules and plans. The export does not
+need to run up to today; the page shows the last attendance date it found so it is clear
+how current the numbers are.
 
 ## Rules
 
@@ -38,17 +39,24 @@ to infer a schedule.
 
 **Months are calendar months.**
 
-**Shortfalls carry a two-month grace** and are paid **FIFO** by later excess hours: the
-oldest outstanding debt is settled first. Excess hours do not bank forward once all
-outstanding debt inside the window is paid. After two calendar months an unpaid shortfall
-expires and drops off the report.
+**Which months are judged.** The current month and the two whole months before it. On
+25 October that is August, September and October; on 1 November August drops off and it is
+September, October and November. Months are judged whole: all of August counts, whatever
+day of the month it is today. Older visits in the export still help work out a student's
+weekly schedule and what their plan number means, but nothing is owed for those months.
+
+**Each month stands alone.** A completed month owes makeup hours only if that month's own
+hours fell short of its plan: add up every August visit (makeups dated in August included)
+and compare with August's requirement. Extra hours in a later month never pay off an
+earlier one, and extra hours never bank forward.
 
 **Behind pace** flags a student who is running short of even pace for the current month.
 
-**The two hour columns.** *Makeup hrs owed* is unpaid hours from months that already
-closed, still inside the two-month grace: hours the student is entitled to book.
-*Hrs to book now* is what the current month is still short after projecting the
-sessions left in it, so it shrinks on its own as they attend.
+**The two hour columns.** *Makeup hrs owed* is how far each of the two completed months
+fell short, added up: hours the student is entitled to book. The student's panel lists them
+month by month ("Aug 2026: 1 hr(s) short"). *Hrs to book now* is what the current month is
+still short after projecting the sessions left in it, so it shrinks on its own as they
+attend.
 
 **A month with no attendance at all is taken as a hold or a break.** Charging a full
 plan for a month nobody attended manufactures makeup hours nobody will ever book, and
@@ -77,13 +85,12 @@ than it closes. The windows are the same all year, summer included:
 - The end is the export's Departure Time, or the start plus the minutes logged when that
   column is missing.
 - The 12:00 AM marker is the most common makeup entry.
-- A makeup's hours credit the month it is dated in, like any other hours.
+- A makeup's hours credit the month it is dated in, like any other hours, and only that
+  month. To make up August, the makeup has to be dated in August.
 - Makeups are not evidence of the weekly schedule or of what the plan means, and they
   are never flagged as odd.
 - The student's panel tags them "makeup" and says how many of each month's hours were
   makeups.
-- Hours attended in the current month beyond its requirement pay old debt immediately,
-  so a makeup redeemed today clears the old month today.
 
 **A plan number can mean hours or sessions.** For students whose sessions run 2 hours, a
 plan of 4 sometimes means 4 sessions × 2 hours = 8 hours a month, and the plan cannot
@@ -96,9 +103,11 @@ student attends:
 It asks in the review queue only when neither can tell. The answer is remembered.
 
 **A student coming at the next plan level is noted, not flagged.** Extra hours are not a
-problem: they pay older debt. But if a student's regular (non-makeup) hours reach the next
+problem. But if a student's regular (non-makeup) hours reach the next
 plan level (8 on a 4, 12 on an 8) for each of the last three completed months, their panel
-says they are likely on that plan. The note is inferred from attendance, and it disappears
+says they are likely on that plan. This looks at every month in the export, not only the
+judged ones, so with an export starting 1 August the first such notes can appear in
+November. The note is inferred from attendance, and it disappears
 as soon as a month drops back. A plan change that Radius itself shows is noted at once, as
 confirmed.
 
@@ -116,14 +125,16 @@ One logged hour must equal one delivered hour. Concretely:
   real time, and a separate 1-hour entry at **12:00–1:00 AM** dated to the month being
   credited (same month or a past month). This also makes the Radius session counts come out
   right without inventing filler entries.
-- **Date the 12 AM marker on the exact missed date** where possible. The hours land the same
-  either way, but the marker then also clears that date from the missed list.
+- **Date the 12 AM marker in the month it makes up**, on the exact missed date where
+  possible. A marker dated in October counts for October only, so it cannot clear an
+  August shortfall. Dating it on the missed date also clears that date from the missed list.
 - **When Radius refuses to backdate** (the enrollment plan rolled over at the month
-  boundary), log the marker in the current month instead; the two-month grace ledger
-  credits it against the oldest debt automatically, and now does so the same day.
+  boundary), the tracker has no way to tell that a current-month entry was meant for an
+  earlier month, so that month still shows as short.
 - **Genuine 2-hour students keep their honest 2-hour entries.** The rule is only about
   makeup hours hiding inside longer entries.
-- **Makeups are not honored beyond the two-month grace.**
+- **Makeups are only owed for the two completed months being judged.** Once a month drops
+  out of the window, it is no longer owed.
 
 **Enrollment dates prorate.** A student who started mid-month only owes the part of the
 month they were enrolled for.
@@ -231,7 +242,7 @@ any more.
 Each finding is answerable:
 - Confirming it marks it checked.
 - Marking a duplicate ignores its hours. That correction is stored with the other saved
-  answers and flows through the requirement, the missed dates and the FIFO ledger.
+  answers and flows through the requirement, the missed dates and the hours owed.
 
 The other questions the tool asks rather than guessing, each with the likely answer marked:
 

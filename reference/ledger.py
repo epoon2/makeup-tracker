@@ -1,12 +1,12 @@
-"""FIFO settlement of monthly shortfalls against later excess hours.
+"""What is owed: each month in the window stands alone.
 
-A shortfall in a month becomes a debt. Hours attended beyond the requirement in a later
-month pay that debt oldest-first. A debt survives two calendar months past the month it
-arose in and then expires. Excess hours never bank forward on their own: once every
-outstanding debt inside the window is paid, the rest is gone.
-
-Two calendar months of grace, so a July shortfall is payable in August and September and
-expires at the end of September.
+Ethan's rule (25 Oct 2026): a student owes makeups for a completed month exactly when that
+month's hours fall short of its plan - all of that month's sessions, whatever the dates,
+makeups logged into it included. Extra hours in a later month do not pay an earlier one;
+they count for the month they are dated in. Only the months the window covers are judged
+(report.judged_window): the month two months before today through the current one, so a
+month's shortfall can be made up for two months and then drops off. The current month never
+owes anything yet: its gap is projected as hours to book. Mirrors settle() in index.html.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from .months import MonthResult
 
-GRACE_MONTHS = 2
+JUDGED_MONTHS_BACK = 2
 
 
 def _index(year: int, month: int) -> int:
@@ -43,13 +43,12 @@ class Debt:
 
         return f"{calendar.month_abbr[self.month]} {self.year}"
 
-    def expires_after(self) -> int:
-        return _index(self.year, self.month) + GRACE_MONTHS
-
 
 @dataclass
 class Settlement:
     debts: list[Debt] = field(default_factory=list)
+    # Kept for the report's shape; under the standalone rule nothing is paid across months
+    # and nothing expires inside the window.
     payments: list[tuple[str, str, int]] = field(default_factory=list)
     expired_hours: int = 0
     unused_excess: int = 0
@@ -64,57 +63,15 @@ class Settlement:
 
 
 def settle(months: list[MonthResult]) -> Settlement:
-    """Walk the months in order, opening debts and paying them oldest-first.
-
-    The current month never opens a debt: its gap is a projection, reported separately as
-    makeups to schedule, not as hours already owed. Held months open nothing either.
-    """
+    """One debt per completed, not-held month that fell short of its plan."""
     result = Settlement()
-    ordered = sorted(months, key=lambda m: (m.year, m.month))
-
-    for month in ordered:
-        now = _index(month.year, month.month)
-
-        # Expire anything past its grace window before this month's excess is applied,
-        # so a debt cannot be paid by hours attended after it lapsed.
-        for debt in result.debts:
-            if not debt.expired and debt.outstanding > 0 and now > debt.expires_after():
-                debt.expired = True
-                result.expired_hours += debt.outstanding
-
-        # A held month requires nothing, so everything attended in it is excess and pays
-        # down earlier debt. That is the point of coming in while on hold. The current
-        # month pays too, from hours already sat (never from the projection): a makeup
-        # redeemed today should clear the old debt today, not at the end of the month.
-        shortfall = month.shortfall
-        excess = max(0, month.attended - month.required)
-
-        if excess:
-            for debt in result.debts:
-                if excess <= 0:
-                    break
-                if debt.expired or debt.outstanding <= 0:
-                    continue
-                applied = min(excess, debt.outstanding)
-                debt.paid += applied
-                excess -= applied
-                result.payments.append((month.label, debt.label, applied))
-            result.unused_excess += excess
-
-        # The current month never opens a debt: its gap is a projection, reported as
-        # makeups to schedule rather than as hours already owed.
-        if month.is_current:
+    for month in sorted(months, key=lambda m: (m.year, m.month)):
+        if month.is_current or month.on_hold:
             continue
-
-        if shortfall and not month.on_hold:
+        shortfall = max(0, month.required - month.attended)
+        if shortfall:
             result.debts.append(
-                Debt(
-                    year=month.year,
-                    month=month.month,
-                    hours=shortfall,
-                    basis=month.absence_basis,
-                    note=month.note,
-                )
+                Debt(year=month.year, month=month.month, hours=shortfall,
+                     basis=month.absence_basis, note=month.note)
             )
-
     return result

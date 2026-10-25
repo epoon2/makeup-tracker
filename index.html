@@ -1292,57 +1292,33 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
 }
 
 /* ---------------------------------------------------------------------------
-   FIFO settlement inside a two-month grace window
+   What is owed: each month in the window stands alone
+
+   Ethan's rule (25 Oct 2026): a student owes makeups for a completed month exactly when
+   that month's hours fall short of its plan - all of that month's sessions, whatever
+   the dates, makeups logged into it included. Extra hours in a later month do not pay an
+   earlier one; they count for the month they are dated in. Only the months the window
+   covers are judged (judgedWindow): today, that is the month two months back through
+   the current one, so a month's shortfall can be made up for two months and then drops
+   off. The current month never owes anything yet: its gap is projected as hours to book.
 --------------------------------------------------------------------------- */
 
-const GRACE_MONTHS = 2;
+const JUDGED_MONTHS_BACK = 2;
 const monthIndex = (y, m) => y * 12 + (m - 1);
 
 function settle(months) {
-  const debts = [], payments = [];
-  let expired = 0, unused = 0;
+  const debts = [];
   const ordered = [...months].sort((a, b) => monthIndex(a.y, a.m) - monthIndex(b.y, b.m));
-
   for (const month of ordered) {
-    const now = monthIndex(month.y, month.m);
-    // Expire before applying this month's excess, so a lapsed debt can never be paid
-    // by hours attended after it lapsed.
-    for (const debt of debts) {
-      if (!debt.expired && debt.outstanding > 0 && now > debt.expiresAfter) {
-        debt.expired = true;
-        expired += debt.outstanding;
-      }
-    }
-    // A held month requires nothing, so everything attended in it is excess and pays down
-    // earlier debt. That is the point of coming in while on hold. The current month pays
-    // too, from hours already sat (never from the projection): a makeup redeemed today
-    // should clear the old debt today, not at the end of the month.
-    let excess = Math.max(0, month.attended - month.required);
-    if (excess) {
-      for (const debt of debts) {
-        if (excess <= 0) break;
-        if (debt.expired || debt.outstanding <= 0) continue;
-        const applied = Math.min(excess, debt.outstanding);
-        debt.outstanding -= applied;
-        excess -= applied;
-        payments.push({ from: month.label, to: debt.label, hours: applied });
-      }
-      unused += excess;
-    }
-    // The current month never opens a debt: its gap is a projection, reported as
-    // makeups to schedule rather than as hours already owed.
-    if (month.isCurrent) continue;
+    if (month.isCurrent || month.onHold) continue;
     const shortfall = Math.max(0, month.required - month.attended);
-    if (shortfall && !month.onHold) {
-      debts.push({
-        y: month.y, m: month.m, hours: shortfall, outstanding: shortfall, expired: false,
-        label: MON_ABBR[month.m - 1] + " " + month.y,
-        expiresAfter: now + GRACE_MONTHS, basis: month.basis, note: month.note,
-      });
+    if (shortfall) {
+      debts.push({ y: month.y, m: month.m, hours: shortfall, outstanding: shortfall, expired: false,
+                   label: MON_ABBR[month.m - 1] + " " + month.y, basis: month.basis, note: month.note });
     }
   }
-  const owed = debts.filter((d) => !d.expired).reduce((s, d) => s + d.outstanding, 0);
-  return { debts, payments, expired, unused, owed, open: debts.filter((d) => !d.expired && d.outstanding > 0) };
+  const owed = debts.reduce((sum, d) => sum + d.outstanding, 0);
+  return { debts, payments: [], expired: 0, unused: 0, owed, open: debts };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1352,7 +1328,7 @@ function settle(months) {
    worse than no list. Since 25 Oct 2026 it holds only what cannot be right as logged:
    the same entry twice, and entries dated in the future. Visits outside session hours
    are makeups (SESSION_WINDOWS), not oddities; extra hours in a month are not a
-   problem (they pay older debt, and a steady excess shows as a "likely bigger plan"
+   problem (they count for their own month, and a steady excess shows as a "likely bigger plan"
    note instead); and 2-hour entries for 1-hour students count either way.
 --------------------------------------------------------------------------- */
 
@@ -1390,27 +1366,22 @@ function auditVisits(visits, todayN) {
    Report assembly
 --------------------------------------------------------------------------- */
 
-function payableWindow(firstN, throughN) {
-  // The span the report is really about: two months back from the newest attendance.
-  // Anything older has expired out of the grace window, so showing the full export range
-  // would overstate what the numbers cover. Clipped to the start of the export, because
-  // with less than two months of data the window is everything there is. Display only;
-  // the calculation still runs over the whole export, since a partial first month cannot
-  // produce a monthly requirement.
-  const through = fromDayNumber(throughN);
-  let y = through.y, m = through.m - 2;
-  if (m <= 0) { m += 12; y -= 1; }
-  const day = Math.min(through.d, lastDayOf(y, m));
-  return { fromN: Math.max(firstN, mkDate(y, m, day).n), toN: throughN };
+/*
+  The months the report judges: from the month two months before today through the
+  current month, whole months (25 Oct 2026). On 25 Oct that is August, September and
+  October; on 1 Nov, September through November. The export starts earlier (1 Aug on);
+  attendance before the window is used only to work out schedules and plans, never to
+  decide what is owed. Returns the first judged month's index and the dates shown in
+  the header: the window's first day (or the export's, if later) to the last attendance.
+*/
+function judgedWindow(todayN, firstN, throughN) {
+  const today = fromDayNumber(todayN);
+  const fromIdx = monthIndex(today.y, today.m) - JUDGED_MONTHS_BACK;
+  const y = Math.floor(fromIdx / 12), m = fromIdx % 12 + 1;
+  const startN = mkDate(y, m, 1).n;
+  return { fromIdx, startN, fromN: Math.max(firstN, startN), toN: throughN };
 }
 
-// What does the plan number mean for this student: hours, or sessions?
-//
-// Radius plans are sold in "sessions per month", and for one-hour students the two
-// readings are the same number. For two-hour students the centre sometimes leaves the
-// plan at 4 while delivering 4 x 2 = 8 hours a month, and the plan cannot always be
-// changed (it is tied to billing). So the meaning is inferred from what full months
-// actually delivered, and a person can pin it either way from the review queue.
 /*
   The plan in force each month, from the Sessions Per Month on that month's attendance
   rows (the latest row in the month wins). A month with no rows keeps the month before's
@@ -1514,6 +1485,8 @@ function buildReport(attendance, roster, todayN) {
   const firstN = Math.min(...visits.map((v) => v.date.n));
   const today = fromDayNumber(todayN);
   const dataThrough = fromDayNumber(dataThroughN);
+  const win = judgedWindow(todayN, firstN, dataThroughN);
+  const judging = (mo) => monthIndex(mo.y, mo.m) >= win.fromIdx;
   let holdsClosed = 0;
   const firstDate = fromDayNumber(firstN);
 
@@ -1569,8 +1542,10 @@ function buildReport(attendance, roster, todayN) {
     // The student-level schedule is the one that applied most recently, since that is what
     // someone reading the row wants. Earlier months keep their own.
     const schedule = schedules[span[span.length - 1][0] + "-" + span[span.length - 1][1]];
-    const ledger = settle(months);
-    const current = months.find((mo) => mo.isCurrent) || null;
+    // Only the window's months are judged; earlier ones only fed schedules and plans.
+    const judged = months.filter(judging);
+    const ledger = settle(judged);
+    const current = judged.find((mo) => mo.isCurrent) || null;
     // flags: worth checking. notes: worth knowing, nothing to do.
     const flags = [];
     const notes = [];
@@ -1612,20 +1587,21 @@ function buildReport(attendance, roster, todayN) {
     }
     // Empty months are explained on their own line under By month, with the button to
     // charge them, so they are not repeated here.
-    const audit = auditVisits(list, todayN);
+    const inWindow = list.filter((v) => v.date.n >= win.startN);
+    const audit = auditVisits(inWindow, todayN);
     const onSched = new Set(schedule.weekdays);
-    const attendedDates = list
+    const attendedDates = inWindow
       .map((v) => ({ n: v.date.n, hours: v.hours, marker: v.marker, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, planInfo, schedule, schedules, months, ledger, rec, flags, notes, current, attendedDates, over, audit,
+      plan, planInfo, schedule, schedules, months: judged, ledger, rec, flags, notes, current, attendedDates, over, audit,
       // Held right now, which is what the On hold list means. Driven by the current
       // month rather than roster status, so a hold entered by hand lands on the list.
       onHold: current ? current.onHold : !!(rec && rec.onHold),
       owed: ledger.owed,
       toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
-      missed: months.flatMap((mo) => mo.missed).sort((a, b) => a - b),
+      missed: judged.flatMap((mo) => mo.missed).sort((a, b) => a - b),
     });
   }
 
@@ -1634,10 +1610,6 @@ function buildReport(attendance, roster, todayN) {
     .filter((r) => !attendedKeys.has(r.key) && r.expected)
     .sort((a, b) => displayName(a.key).localeCompare(displayName(b.key)));
 
-  const elapsed = span.filter(([y, m]) => !(y === today.y && m === today.m));
-  if (elapsed.length < 2) {
-    warnings.push("only " + elapsed.length + " completed month(s) of attendance are available, so the two-month grace window cannot settle debt against a later month yet");
-  }
   const shakyGrant = students.reduce((a, s) => a + (s.current && !s.schedule.confident ? s.current.granted : 0), 0);
   const totalGrant = students.reduce((a, s) => a + (s.current ? s.current.granted : 0), 0);
   if (shakyGrant) {
@@ -1648,14 +1620,13 @@ function buildReport(attendance, roster, todayN) {
     warnings.push(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates");
   }
 
-  const win = payableWindow(firstN, dataThroughN);
   if (holdsClosed) {
     warnings.push(holdsClosed + " hold(s) ended automatically because this export shows those students enrolled again");
     saveOverrides();
   }
   return {
     today, dataThrough, span, students, neverAttended, warnings,
-    windowFrom: fromDayNumber(win.fromN), windowTo: fromDayNumber(win.toN),
+    windowFrom: fromDayNumber(win.fromN), windowTo: fromDayNumber(win.toN), exportFrom: fromDayNumber(firstN),
     owing: students.filter((s) => s.owed > 0 && !s.onHold).sort((a, b) => b.owed - a.owed || a.display.localeCompare(b.display)),
     behind: students.filter((s) => s.toSchedule > 0 && !s.onHold).sort((a, b) => b.toSchedule - a.toSchedule || a.display.localeCompare(b.display)),
     held: students.filter((s) => s.onHold).sort((a, b) => a.display.localeCompare(b.display)),
@@ -2138,11 +2109,10 @@ function detailFor(s) {
   });
   rows.push("<dt>By month</dt><dd>" + monthLines.join("<br>") + "</dd>");
 
-  if (s.ledger.payments.length) {
-    rows.push("<dt>Paid off</dt><dd>" + s.ledger.payments.map((p) =>
-      p.hours + " hr(s) of " + esc(p.to) + " covered by " + esc(p.from)).join("<br>") + "</dd>");
+  if (s.ledger.debts.length) {
+    rows.push("<dt>Owed for</dt><dd>" + s.ledger.debts.map((d) =>
+      esc(d.label) + ": " + d.hours + " hr(s) short").join("<br>") + "</dd>");
   }
-  if (s.ledger.expired) rows.push("<dt>Expired unpaid</dt><dd>" + s.ledger.expired + " hrs past the two-month grace</dd>");
 
   if (s.attendedDates.length) {
     // Off-schedule visits are marked, because those are the ones already doing makeup
@@ -2194,11 +2164,11 @@ function renderTable() {
 
   wrap.innerHTML =
     '<div class="sub" style="margin:2px 0 8px">' +
-    '<b>Makeup hrs owed</b> are unpaid hours from months that already closed, still inside the two-month grace. ' +
+    '<b>Makeup hrs owed</b>: for each of the last two completed months, how far that month alone fell short of its plan. ' +
     '<b>Hrs to book now</b> is what this month is short after projecting the sessions left in it, so it shrinks as they attend.</div>' +
     '<table><thead><tr><th>Student</th><th>Schedule</th>' +
     '<th class="num">Plan<span class="hsub">hrs/month</span></th>' +
-    '<th class="num" title="Unpaid shortfall hours from months that already closed, inside the two-month grace">' +
+    '<th class="num" title="For each of the last two completed months, how far that month alone fell short of its plan">' +
     'Makeup hrs owed<span class="hsub">past months</span></th>' +
     '<th class="num" title="What this month is still short after projecting the sessions left in it">' +
     'Hrs to book now<span class="hsub">this month</span></th>' +
@@ -2319,7 +2289,9 @@ function renderTable() {
 function render() {
   el("results").hidden = false;
   el("stamp").className = "stamp live";
-  el("stamp").textContent = "Calculating " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
+  el("stamp").textContent = "Judging " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
+                            (report.exportFrom.n < report.windowFrom.n
+                              ? " (visits from " + fmtLong(report.exportFrom) + " help with schedules)" : "") +
                             "  ·  last attendance " + fmtLong(report.dataThrough) +
                             "  ·  run " + fmtLong(report.today);
   renderCards();
@@ -2484,7 +2456,7 @@ async function workbook(sheets) {
 }
 
 function exportRows() {
-  const stamp = "calculating " + fmtLong(report.windowFrom) + " to " + fmtLong(report.windowTo) +
+  const stamp = "judging " + fmtLong(report.windowFrom) + " to " + fmtLong(report.windowTo) +
                 ", last attendance " + fmtLong(report.dataThrough) + ", run " + fmtLong(report.today);
 
   const owes = [["Student", "Plan (hrs/mo)", "Schedule", "Schedule confident",
@@ -3478,11 +3450,15 @@ function selfCheck() {
   // --- name key: the join between the two exports ------------------------------------
   is("nameKey collapses case and space", nameKey(" De  La Cruz ", "SOTO"), nameKey("de la cruz", "soto"));
 
-  // --- payable window: two months back, clipped to the export start -------------------
-  const w1 = payableWindow(D(2026, 7, 1).n, D(2026, 8, 17).n);
-  is("window clips to export start", [fromDayNumber(w1.fromN).m, fromDayNumber(w1.fromN).d], [7, 1]);
-  const w2 = payableWindow(D(2026, 7, 1).n, D(2026, 9, 29).n);
-  is("window is two months back", [fromDayNumber(w2.fromN).m, fromDayNumber(w2.fromN).d], [7, 29]);
+  // --- the judged window: whole months, two back from today ----------------------------
+  const w1 = judgedWindow(D(2026, 10, 25).n, D(2026, 8, 1).n, D(2026, 10, 24).n);
+  is("on 25 Oct, August through October is judged", [fromDayNumber(w1.startN).m, fromDayNumber(w1.startN).d], [8, 1]);
+  const w2 = judgedWindow(D(2026, 11, 1).n, D(2026, 8, 1).n, D(2026, 10, 31).n);
+  is("on 1 Nov, August drops off", [fromDayNumber(w2.startN).m, fromDayNumber(w2.startN).d], [9, 1]);
+  const w3 = judgedWindow(D(2026, 8, 20).n, D(2026, 7, 1).n, D(2026, 8, 19).n);
+  is("a short export is all window", [fromDayNumber(w3.fromN).m, fromDayNumber(w3.fromN).d], [7, 1]);
+  const w4 = judgedWindow(D(2027, 1, 10).n, D(2026, 8, 1).n, D(2027, 1, 9).n);
+  is("the window crosses the year", [fromDayNumber(w4.startN).y, fromDayNumber(w4.startN).m], [2026, 11]);
 
   // --- holds: whole months, and the close-on-enrolled lifecycle ----------------------
   const openHold = { start: "2026-08", until: null };
@@ -3494,28 +3470,20 @@ function selfCheck() {
   is("closed hold covers Sep", holdCovers(closed, "2026-09"), true);
   is("closed hold stops at Oct", holdCovers(closed, "2026-10"), false);
 
-  // --- FIFO settlement inside a two-month grace --------------------------------------
+  // --- what is owed: each month stands alone ------------------------------------------
   const M = (y, m, required, attended, extra) =>
     Object.assign({ y, m, required, attended, onHold: false, isCurrent: false,
                     label: MONTHS[m - 1] + " " + y }, extra || {});
-  is("later excess pays an earlier shortfall", settle([M(2026, 5, 8, 6), M(2026, 6, 8, 10)]).owed, 0);
-  const fifo = settle([M(2026, 4, 8, 5), M(2026, 5, 8, 6), M(2026, 6, 8, 12)]);
-  is("oldest debt is paid first", fifo.payments.map((p) => [p.to, p.hours]), [["Apr 2026", 3], ["May 2026", 1]]);
-  is("FIFO leaves the newer debt", fifo.owed, 1);
-  const expiry = settle([M(2026, 4, 8, 4), M(2026, 5, 8, 8), M(2026, 6, 8, 8), M(2026, 7, 8, 16)]);
-  is("debt expires after two months", expiry.expired, 4);
-  is("expired debt cannot be paid late", expiry.payments, []);
-  is("payable on the last month of grace", settle([M(2026, 4, 8, 4), M(2026, 6, 8, 12)]).owed, 0);
-  const bank = settle([M(2026, 5, 8, 12), M(2026, 6, 8, 4)]);
-  is("excess does not bank forward", [bank.owed, bank.unused], [4, 4]);
-  is("current month opens no debt", settle([M(2026, 8, 8, 2, { isCurrent: true })]).owed, 0);
-  is("hours already sat this month pay old debt at once",
-     settle([M(2026, 7, 8, 4), M(2026, 8, 8, 12, { isCurrent: true })]).owed, 0);
-  is("this month's own requirement is not paid from thin air",
-     settle([M(2026, 7, 8, 4), M(2026, 8, 8, 6, { isCurrent: true })]).owed, 4);
+  is("a short month owes its own shortfall", settle([M(2026, 8, 8, 6)]).owed, 2);
+  is("a full month owes nothing", settle([M(2026, 8, 8, 8)]).owed, 0);
+  is("extra hours later do not pay an earlier month",
+     settle([M(2026, 8, 8, 6), M(2026, 9, 8, 10)]).owed, 2);
+  is("each short month counts", settle([M(2026, 8, 8, 5), M(2026, 9, 8, 6)]).debts.map((d) => [d.label, d.hours]),
+     [["Aug 2026", 3], ["Sep 2026", 2]]);
+  is("current month opens no debt", settle([M(2026, 10, 8, 2, { isCurrent: true })]).owed, 0);
+  is("this month's hours do not pay an earlier month",
+     settle([M(2026, 9, 8, 4), M(2026, 10, 8, 12, { isCurrent: true })]).owed, 4);
   is("held month opens no debt", settle([M(2026, 8, 8, 0, { onHold: true })]).debts.length, 0);
-  is("attendance while held pays earlier debt",
-     settle([M(2026, 7, 8, 6), M(2026, 8, 0, 2, { onHold: true })]).owed, 0);
 
   // --- whole-month absence: evidence, never current roster status --------------------
   const rec = (o) => Object.assign({ start: null, end: null, lastAttendance: null, onHold: false }, o);
@@ -3684,12 +3652,21 @@ function selfCheck() {
     }
   }
   row("Selfcheck", "Gap", 2026, 9, 2, 60, 8, "11:00 AM");
+  // Short in July only (before the window), and short in September with a heavy October.
+  for (const [mth, days] of [[7, [1, 2]], [8, [3, 4, 5, 6, 10, 11, 12, 13]], [9, [1, 2, 3, 8, 9, 10, 14, 15]], [10, [1, 5, 6, 7, 8, 12, 13]]]) {
+    for (const d of days) row("Selfcheck", "July", 2026, mth, d, 60, 8);
+  }
+  for (const [mth, days] of [[8, [3, 4, 5, 6, 10, 11, 12, 13]], [9, [1, 2, 3, 8]], [10, [1, 5, 6, 7, 8, 12, 13, 14, 15, 19]]]) {
+    for (const d of days) row("Selfcheck", "Sept", 2026, mth, d, 60, 8);
+  }
   person("Selfcheck", "Busy", "Enrolled");
   person("Selfcheck", "Changed", "Enrolled");
   person("Selfcheck", "Gap", "Enrolled");
   person("Selfcheck", "Gap", "Inactive");
   person("Selfcheck", "Twin", "Enrolled");
   person("Selfcheck", "Twin", "Enrolled");
+  person("Selfcheck", "July", "Enrolled");
+  person("Selfcheck", "Sept", "Enrolled");
   const savedOverrides = overrides;
   overrides = { version: 1, students: {} };
   let mini;
@@ -3700,11 +3677,14 @@ function selfCheck() {
      kid("Busy").notes.some((t) => /Likely on a 12\/month plan/.test(t)), true);
   is("a plan change in Radius is noted as such",
      kid("Changed").notes.some((t) => /Plan changed in Radius from 8 to 12\/month in September 2026/.test(t)), true);
-  is("the changed plan counts from its month on", kid("Changed").months.slice(0, 3).map((mo) => mo.required), [8, 8, 12]);
+  is("only August-October are judged on 20 Oct", kid("Busy").months.map((mo) => mo.shortLabel), ["Aug 2026", "Sep 2026", "Oct 2026"]);
+  is("the changed plan counts from its month on", kid("Changed").months.slice(0, 2).map((mo) => mo.required), [8, 12]);
   is("an empty month is taken as a hold, not asked about",
-     [kid("Gap").months[1].assumedHold, buildQuestions(mini).filter((q) => q.key === nameKey("Selfcheck", "Gap") && /absent|hold/.test(q.id)).length],
+     [kid("Gap").months[0].assumedHold, buildQuestions(mini).filter((q) => q.key === nameKey("Selfcheck", "Gap") && /absent|hold/.test(q.id)).length],
      [true, 0]);
-  is("an 11 AM visit is counted as a makeup", kid("Gap").months[2].markerHours, 1);
+  is("an 11 AM visit is counted as a makeup", kid("Gap").months[1].markerHours, 1);
+  is("a short July is outside the window and owes nothing", kid("July").owed, 0);
+  is("a short September is owed, whatever October brings", kid("Sept").owed, 4);
   is("an old record under the same name is not a clash", kid("Gap").flags.some((f) => /two Enrolled/.test(f)), false);
   is("two Enrolled records under one name are", mini.warnings.some((w) => /^1 name\(s\) belong to more than one Enrolled/.test(w)), true);
 

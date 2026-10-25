@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from .audit import audit_visits
 from .loaders import Loaded, RosterRecord
-from .ledger import Settlement, settle
+from .ledger import JUDGED_MONTHS_BACK, Settlement, settle
 from .months import MonthResult, build_month, month_bounds, months_between
 from .overrides import Overrides, month_key
 from .schedule import Schedule, infer, infer_for_month
@@ -67,23 +67,15 @@ class StudentReport:
         return sorted(out)
 
 
-def payable_window(first_visit: dt.date, data_through: dt.date) -> tuple[dt.date, dt.date]:
-    """The span the report is really about: two months back from the newest attendance.
-
-    Anything older than that has expired out of the grace window, so showing the full
-    export range would overstate what the numbers cover. Clipped to the start of the
-    export, because with less than two months of data the window is simply everything
-    there is. Display only; the calculation still runs over the whole export, since a
-    partial first month cannot produce a monthly requirement.
-    """
-    month = data_through.month - 2
-    year = data_through.year
-    if month <= 0:
-        month += 12
-        year -= 1
-    day = min(data_through.day, calendar.monthrange(year, month)[1])
-    back = dt.date(year, month, day)
-    return max(first_visit, back), data_through
+def judged_window(today: dt.date, first_visit: dt.date, data_through: dt.date):
+    """The months the report judges: from the month two months before today through the
+    current month, whole months (25 Oct 2026). On 25 Oct that is August-October; on 1 Nov,
+    September-November. Attendance before the window only feeds schedules and plans.
+    Returns (first judged month index, window start date, shown-from date, shown-to date).
+    Mirrors judgedWindow() in index.html."""
+    from_idx = today.year * 12 + (today.month - 1) - JUDGED_MONTHS_BACK
+    start = dt.date(from_idx // 12, from_idx % 12 + 1, 1)
+    return from_idx, start, max(first_visit, start), data_through
 
 
 @dataclass
@@ -243,6 +235,7 @@ def build(loaded: Loaded, today: dt.date | None = None,
     data_through = max(v.date for v in loaded.visits)
     first_visit = min(v.date for v in loaded.visits)
     span = months_between(first_visit, today)
+    from_idx, window_start, window_from, window_to = judged_window(today, first_visit, data_through)
 
     by_student: dict[str, list] = collections.defaultdict(list)
     for visit in loaded.visits:
@@ -305,6 +298,8 @@ def build(loaded: Loaded, today: dt.date | None = None,
         # The student-level schedule is the one that applied most recently, since that is
         # what a person looking at the row wants to know. Earlier months keep their own.
         schedule = schedules[span[-1]]
+        # Only the window's months are judged; earlier ones only fed schedules and plans.
+        months = [mo for mo in months if mo.year * 12 + (mo.month - 1) >= from_idx]
         report = StudentReport(
             key=key,
             display=_display(key),
@@ -334,7 +329,7 @@ def build(loaded: Loaded, today: dt.date | None = None,
         if record is None:
             report.flags.append("no roster record matched")
         # Assumed holds and hand-charged empty months are notes on the page, not flags.
-        report.audit = audit_visits(visits, today)
+        report.audit = audit_visits([v for v in visits if v.date >= window_start], today)
         students.append(report)
 
     attended_keys = set(by_student)
@@ -346,16 +341,6 @@ def build(loaded: Loaded, today: dt.date | None = None,
     never.sort(key=lambda r: _display(r.key))
 
     warnings = list(loaded.warnings)
-    elapsed = [m for m in span if m != (today.year, today.month)]
-    if len(elapsed) < 2:
-        # Not a fix-your-export warning. Attendance was only recorded reliably from
-        # 1 July 2026, so there is nothing earlier to load. The grace window simply has
-        # less to work with than it will next month, and the report should say so rather
-        # than look like it checked further back than it did.
-        warnings.append(
-            f"only {len(elapsed)} completed month(s) of attendance are available, so the "
-            "two-month grace window cannot settle debt against a later month yet"
-        )
     shaky_grant = sum(
         s.current.granted for s in students if s.current and not s.schedule.confident
     )
@@ -372,7 +357,6 @@ def build(loaded: Loaded, today: dt.date | None = None,
             "their missed dates and behind-pace flags are estimates"
         )
 
-    window_from, window_to = payable_window(first_visit, data_through)
     return Report(
         generated_for=today,
         data_through=data_through,

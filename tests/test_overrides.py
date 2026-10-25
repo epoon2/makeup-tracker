@@ -13,11 +13,11 @@ def test_held_month_opens_no_debt():
     assert [d.label for d in s.debts] == ["Jul 2026"]
 
 
-def test_attendance_while_on_hold_pays_earlier_debt():
-    # On hold in August but came in twice to burn off what July left owing.
+def test_attendance_while_on_hold_does_not_pay_another_month():
+    # Each month stands alone (25 Oct 2026): July's shortfall stays July's.
     s = settle([M(2026, 7, 8, 6), M(2026, 8, 0, 2, on_hold=True)])
-    assert s.owed == 0
-    assert s.payments == [("August 2026", "Jul 2026", 2)]
+    assert s.owed == 2
+    assert s.payments == []
 
 
 def test_hold_covers_from_start_until_exclusive():
