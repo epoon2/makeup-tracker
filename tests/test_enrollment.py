@@ -128,6 +128,17 @@ def test_session_windows_decide_what_is_a_makeup():
     assert is_makeup_time(sun, 15 * 60) is True          # closed Sunday
     assert is_makeup_time(mon, 0) is True                # the 12 AM marker
     assert is_makeup_time(mon, None) is False
+    assert is_makeup_time(mon, 18 * 60 + 30, 19 * 60 + 30) is True   # ends after 7:15 PM
+    assert is_makeup_time(mon, 18 * 60 + 15, 19 * 60 + 15) is False
+    assert is_makeup_time(sat, 12 * 60 + 30, 13 * 60 + 30) is True   # ends after 1:15 PM
+
+
+def test_the_end_of_a_visit_comes_from_departure_time_or_its_length():
+    from reference.loaders import end_minutes_for
+
+    assert end_minutes_for({"Departure Time": "7:30 PM", "Duration (Minutes)": 60}, 18 * 60) == 19 * 60 + 30
+    assert end_minutes_for({"Duration (Minutes)": 117}, 11 * 60 + 3) == 13 * 60
+    assert end_minutes_for({"Duration (Minutes)": ""}, 15 * 60) is None
 
 
 def test_an_empty_bracketed_month_is_assumed_to_be_a_hold():

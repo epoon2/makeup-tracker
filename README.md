@@ -62,16 +62,20 @@ who comes Monday and Wednesday one week has moved their sessions, not missed the
 week counts as short only by how many fewer sessions were attended than scheduled,
 and the earliest scheduled days are the ones forgiven.
 
-**A visit outside the session windows is a makeup, never a regular session.** The
-windows, all year round:
+**A visit outside the session windows is a makeup, never a regular session.** A visit is
+regular only if it **starts** no earlier than its day's window opens **and ends** no later
+than it closes. The windows are the same all year, summer included:
 
-| Days | Start times |
+| Days | Window |
 |---|---|
 | Mon, Tue, Thu, Fri | 2:45–7:15 PM |
 | Wed | 1:45–7:15 PM |
 | Sat | 8:45 AM–1:15 PM |
 | Sun | closed, so any visit is a makeup |
 
+- A Monday visit starting at 2:30 PM is a makeup, and so is one running 6:30 to 7:30 PM.
+- The end is the export's Departure Time, or the start plus the minutes logged when that
+  column is missing.
 - The 12:00 AM marker is the most common makeup entry.
 - A makeup's hours credit the month it is dated in, like any other hours.
 - Makeups are not evidence of the weekly schedule or of what the plan means, and they

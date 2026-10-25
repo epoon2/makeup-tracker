@@ -58,8 +58,8 @@ person to reconcile, not auto-corrected.
 Not re-run on real exports yet; regenerate this file on the next run and record what moved.
 What will move, and why:
 
-- **Makeups by session window.** Visits outside Mon/Tue/Thu/Fri 2:45-7:15 PM, Wed
-  1:45-7:15 PM, Sat 8:45 AM-1:15 PM (and all Sunday visits) are makeups. They are no
+- **Makeups by session window.** Visits that start before or end after Mon/Tue/Thu/Fri
+  2:45-7:15 PM, Wed 1:45-7:15 PM, Sat 8:45 AM-1:15 PM (and all Sunday visits) are makeups. They are no
   longer schedule evidence, so schedules and missed dates for some students change.
 - **Each month uses its own plan** from that month's rows, instead of the first row's
   plan for every month.
@@ -72,7 +72,7 @@ What will move, and why:
 
 ## Checking it
 
-1. Open `index.html`, click **Run self-check** at the bottom. Expect **121 checks passed**.
+1. Open `index.html`, click **Run self-check** at the bottom. Expect **126 checks passed**.
 2. Drop both exports, click Run, compare the five cards above.
 3. With Python: `python3 tests/parity_browser.py` must report **0 differing** across all
    students (`TODAY` in that script is pinned to 2026-08-20 for these inputs).

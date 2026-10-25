@@ -732,16 +732,21 @@ function parseDate(value) {
 // the rest are fallbacks, and a time inside Attendance Date is the last resort.
 const TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
 
-/*
-  The centre's session windows, by weekday (Monday first), as start-time minutes after
-  midnight. The same windows the Radius roster tool uses, all year round (confirmed
-  25 Oct 2026): Mon, Tue, Thu, Fri 2:45-7:15 PM; Wed 1:45-7:15 PM; Sat 8:45 AM-1:15 PM;
-  closed Sunday.
+// Columns that may carry the time a session ended. The real export calls it "Departure
+// Time"; the rest are fallbacks. Without one, the end is the start plus the minutes logged.
+const END_TIME_COLUMNS = ["Departure Time", "End Time", "Session End Time", "Session End", "Time Out"];
 
-  A visit that starts outside its day's window is a makeup, never a regular session -
-  the 12 AM marker is just the most common case. Its hours count for the month it is
-  dated in like any others, but it is not evidence of the weekly schedule or of what
-  the plan number means, and it is never flagged as odd.
+/*
+  The centre's session windows, by weekday (Monday first), in minutes after midnight. The
+  same windows the Radius roster tool uses for Time In and Time Out, all year round, summer
+  included (confirmed 25 Oct 2026): Mon, Tue, Thu, Fri 2:45-7:15 PM; Wed 1:45-7:15 PM;
+  Sat 8:45 AM-1:15 PM; closed Sunday.
+
+  A visit is a regular session only if it starts no earlier than its day's window opens
+  and ends no later than it closes. Anything else is a makeup - the 12 AM marker is just
+  the most common case. A makeup's hours count for the month it is dated in like any
+  others, but it is not evidence of the weekly schedule or of what the plan number
+  means, and it is never flagged as odd.
 */
 const SESSION_WINDOWS = [
   [14 * 60 + 45, 19 * 60 + 15],
@@ -753,10 +758,24 @@ const SESSION_WINDOWS = [
   null,
 ];
 
-function isMakeupTime(dayN, startMinutes) {
+function isMakeupTime(dayN, startMinutes, endMinutes) {
   if (startMinutes === null || startMinutes === undefined) return false;
   const w = SESSION_WINDOWS[weekdayOf(dayN)];
-  return !w || startMinutes < w[0] || startMinutes > w[1];
+  if (!w || startMinutes < w[0] || startMinutes > w[1]) return true;
+  return endMinutes !== null && endMinutes !== undefined && endMinutes > w[1];
+}
+
+// When a visit ended: an end-time column first, else the start plus the minutes logged.
+function endMinutesFor(row, startMinutes) {
+  for (const col of END_TIME_COLUMNS) {
+    if (col in row) {
+      const t = parseTimeOfDay(row[col]);
+      if (t !== null) return t;
+    }
+  }
+  const minutes = Number(row["Duration (Minutes)"]);
+  if (startMinutes === null || startMinutes === undefined || !isFinite(minutes) || minutes <= 0) return null;
+  return startMinutes + Math.round(minutes);
 }
 
 // A start time as minutes since midnight, or null when the cell says nothing.
@@ -839,7 +858,7 @@ function normalise(attendance, roster) {
       hours,
       spm: parseInt(r["Sessions Per Month"], 10) || 0,
       startMinutes,
-      marker: isMakeupTime(when.n, startMinutes),
+      marker: isMakeupTime(when.n, startMinutes, endMinutesFor(r, startMinutes)),
     });
   }
   if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
@@ -2618,7 +2637,7 @@ const SHARED_COLUMNS = {
   attendance: {
     label: "Student Attendance Report",
     required: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)"],
-    allowed: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)", "Sessions Per Month", ...TIME_COLUMNS],
+    allowed: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)", "Sessions Per Month", ...TIME_COLUMNS, ...END_TIME_COLUMNS],
   },
   roster: {
     label: "Students Export",
@@ -3582,6 +3601,11 @@ function selfCheck() {
   is("Sat 2 PM is a makeup", isMakeupTime(D(2026, 8, 8).n, 14 * 60), true);
   is("Sunday is always a makeup", isMakeupTime(D(2026, 8, 9).n, 15 * 60), true);
   is("12 AM is a makeup", isMakeupTime(D(2026, 8, 4).n, 0), true);
+  is("Mon 6:30-7:30 PM ends after 7:15: a makeup", isMakeupTime(D(2026, 8, 3).n, 18 * 60 + 30, 19 * 60 + 30), true);
+  is("Mon 6:15-7:15 PM is a session", isMakeupTime(D(2026, 8, 3).n, 18 * 60 + 15, 19 * 60 + 15), false);
+  is("Sat 12:30-1:30 PM ends after 1:15: a makeup", isMakeupTime(D(2026, 8, 8).n, 12 * 60 + 30, 13 * 60 + 30), true);
+  is("the end time comes from Departure Time", endMinutesFor({ "Departure Time": "7:30 PM", "Duration (Minutes)": "60" }, 18 * 60), 19 * 60 + 30);
+  is("without one, start plus the minutes logged", endMinutesFor({ "Duration (Minutes)": "117" }, 11 * 60 + 3), 13 * 60);
   is("no start time is not a makeup", isMakeupTime(D(2026, 8, 4).n, null), false);
 
   // --- plan reading: hours vs sessions ------------------------------------------------

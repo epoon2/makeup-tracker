@@ -60,13 +60,14 @@ export const LOCK = {
 export const STAFF_REMOVE_LIMIT = 5;
 const BACKUP_DAYS = 30;
 
-// The columns the page reads (see normalise() and TIME_COLUMNS in index.html).
+// The columns the page reads (see normalise(), TIME_COLUMNS and END_TIME_COLUMNS in index.html).
 const TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
+const END_TIME_COLUMNS = ["Departure Time", "End Time", "Session End Time", "Session End", "Time Out"];
 export const EXPORT_COLUMNS = {
   attendance: {
     label: "Student Attendance Report",
     required: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)"],
-    allowed: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)", "Sessions Per Month", ...TIME_COLUMNS],
+    allowed: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)", "Sessions Per Month", ...TIME_COLUMNS, ...END_TIME_COLUMNS],
   },
   roster: {
     label: "Students Export",

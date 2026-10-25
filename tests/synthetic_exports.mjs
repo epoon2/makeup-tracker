@@ -31,7 +31,9 @@ let seed = 11;
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 
 const att = [["Attendance Date", "First Name", "Last Name", "Duration (Minutes)", "Duration (Hours)",
-              "Sessions Per Month", "Lead Id", "Center", "Arrival Time"]];
+              "Sessions Per Month", "Lead Id", "Center", "Arrival Time", "Departure Time"]];
+const clock = (min) => { const h = Math.floor(min / 60) % 24, m = min % 60; return (h % 12 || 12) + ":" + String(m).padStart(2, "0") + " " + (h < 12 ? "AM" : "PM"); };
+const minutesOf = (t) => { const [hm, ap] = t.split(" "); let [h, m] = hm.split(":").map(Number); if (ap === "PM" && h !== 12) h += 12; if (ap === "AM" && h === 12) h = 0; return h * 60 + m; };
 const stu = [["Student Id", "First Name", "Last Name", "Enrollment Status", "Enrollment Start Date",
               "Enrollment End Date", "Last Attendance Date", "Center", "Lead Id", "Address"]];
 
@@ -45,13 +47,13 @@ function student(i, opts) {
     if (rnd() < (opts.miss ?? 0.1)) continue;
     const mins = opts.mins || 60;
     const plan = typeof opts.plan === "function" ? opts.plan(m) : opts.plan;
-    const time = weekday(ms) === 5 ? "10:00 AM" : weekday(ms) === 2 ? "2:00 PM" : "3:30 PM";
-    att.push([text(ms), first, last, mins, mins / 60, plan, "L" + i, "Temple City", time]);
+    const time = opts.time || (weekday(ms) === 5 ? "10:00 AM" : weekday(ms) === 2 ? "2:00 PM" : "3:30 PM");
+    att.push([text(ms), first, last, mins, mins / 60, plan, "L" + i, "Temple City", time, clock(minutesOf(time) + mins)]);
     lastSeen = text(ms);
   }
   for (const extra of opts.makeups || []) {
     att.push([extra.date, first, last, 60, 1, typeof opts.plan === "function" ? opts.plan(+extra.date.split("/")[0]) : opts.plan,
-              "L" + i, "Temple City", extra.time]);
+              "L" + i, "Temple City", extra.time, clock(minutesOf(extra.time) + 60)]);
   }
   stu.push(["S" + i, first, last, opts.status || "Enrolled", opts.start || "6/1/2026", opts.end || "", lastSeen,
             "Temple City", "L" + i, i + " Made Up St"]);
@@ -79,6 +81,8 @@ for (let k = 0; k < 4; k++) {
     { date: "8/12/2026", time: "12:00 AM" }, { date: "9/9/2026", time: "11:00 AM" },
     { date: "9/13/2026", time: "3:00 PM" }, { date: "10/6/2026", time: "7:45 PM" }] });
 }
+// Late evening sessions that run past 7:15 PM: makeups by their end time.
+for (let k = 0; k < 2; k++) student(i++, { days: [0, 3], plan: 8, time: "6:30 PM" });
 // Stopped partway through September; started late; left.
 student(i++, { days: [0, 2], plan: 8, to: Date.UTC(2026, 8, 12) });
 student(i++, { days: [1, 3], plan: 8, from: Date.UTC(2026, 7, 17), start: "8/15/2026" });

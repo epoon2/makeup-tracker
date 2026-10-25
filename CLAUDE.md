@@ -80,7 +80,7 @@ both, and into `mergeRecords()` in core.mjs, or it will be dropped on the way to
 ## Verifying a change
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
-**Run self-check**. It runs 121 assertions against fixed inputs — rounding, date handling,
+**Run self-check**. It runs 126 assertions against fixed inputs — rounding, date handling,
 FIFO settlement, hold coverage, absence resolution, schedule inference, the data horizon,
 session windows, plan reading and per-month plans, a small end-to-end report, and how
 shared answers are sent and merged — and needs no exports and no tooling. It takes
@@ -98,7 +98,7 @@ and record what moved and why.
 **If you have Python available**, the deeper checks are:
 
 ```bash
-python3 -m pytest tests -q                      # 41 unit tests on the Python rules
+python3 -m pytest tests -q                      # 42 unit tests on the Python rules
 node tests/synthetic_exports.mjs                # made-up exports into testdata/, when the real ones are not at hand
 PARITY_TODAY=2026-10-20 python3 tests/parity_browser.py   # parity on those
 python3 -m reference.run testdata/attendance.xlsx testdata/students.xlsx 2026-08-19
@@ -149,7 +149,7 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
 | Writing .xlsx | 1521 | CRC32 plus `CompressionStream`, minimal OOXML. |
 | Shared mode | 2590 | Sign-in, accounts, answer sync (`answerPatch`/`adoptAnswers`), shared exports, the pre-sharing offer. |
-| Self-check | 3410 | The 121 assertions. |
+| Self-check | 3410 | The 126 assertions. |
 | Student search | 3770 | Global search, keyboard handling, focus mode. |
 
 Line numbers drift as soon as you edit. Search for the section title instead.
@@ -225,11 +225,15 @@ suggest re-exporting from further back.
 **"Enrolled, never attended" means `Enrollment Status = Enrolled` only.** New and
 Pre-Enrolled were tried and produced mostly false alarms.
 
-**A visit starting outside the session windows is a makeup** (25 Oct 2026, the same
-windows as the Radius roster tool, all year round, no summer exception): Mon, Tue, Thu,
-Fri 2:45–7:15 PM; Wed 1:45–7:15 PM; Sat 8:45 AM–1:15 PM; Sunday closed.
-`SESSION_WINDOWS`/`isMakeupTime` in the page, `SESSION_WINDOWS`/`is_makeup_time` in
-`reference/loaders.py`. A 12:00 AM entry is the commonest case (confirmed 20 Aug 2026:
+**A visit outside the session windows is a makeup** (25 Oct 2026, the same
+windows as the Radius roster tool's Time In / Time Out, all year round, no summer
+exception): Mon, Tue, Thu, Fri 2:45–7:15 PM; Wed 1:45–7:15 PM; Sat 8:45 AM–1:15 PM;
+Sunday closed. Regular only if it STARTS no earlier than the window opens AND ENDS no
+later than it closes (Ethan: "not the end time, the start time... and same with the end
+time"). The end is Departure Time (`END_TIME_COLUMNS`), else start + Duration (Minutes).
+`SESSION_WINDOWS`/`isMakeupTime`/`endMinutesFor` in the page, `SESSION_WINDOWS`/
+`is_makeup_time`/`end_minutes_for` in `reference/loaders.py`. Departure Time is one of the
+columns the shared copy keeps (both column lists). A 12:00 AM entry is the commonest case (confirmed 20 Aug 2026:
 12 AM is never legitimate). Makeup ("marker") hours credit the
 month they are dated in but are excluded from schedule inference and from plan-reading
 evidence, and are never audited. The centre's logging convention is one logged hour = one delivered hour: a
