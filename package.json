@@ -1,0 +1,15 @@
+{
+  "name": "makeup-tracker",
+  "private": true,
+  "description": "Makeup hours calculator for Mathnasium Temple City, with a shared copy on Netlify",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/api.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@netlify/blobs": "11.1.3"
+  }
+}

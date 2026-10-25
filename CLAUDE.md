@@ -12,21 +12,28 @@ A makeup-hours tracker for the Mathnasium centre in Temple City, CA. It takes tw
 exports and works out who owes makeup hours, who is behind pace this month, who is on
 hold, and who is enrolled but has never attended.
 
-`index.html` is the entire tool: one file, no build step, no dependencies, no server. Open
-it in a browser and it works. Everything else in the repo supports it.
+`index.html` is the entire calculator: one file, no build step, no dependencies. Open it in a
+browser and it works. On the Netlify site it can also sign in to a **shared copy** (one set of
+exports and answers for everyone), served by one Netlify Function. Everything else in the
+repo supports those two.
 
 | Path | What it is |
 |---|---|
 | `index.html` | The tool. This is what ships. |
 | `reference/` | A second implementation of the same rules in Python, used to check the browser engine's numbers. Not shipped, not required to run anything. |
 | `tests/` | Unit tests for the Python side, plus Playwright scripts driving the real page. |
-| `netlify.toml` | Static hosting config and security headers. |
+| `netlify.toml` | Build (runs the server tests, publishes only `index.html`), functions, security headers. |
+| `netlify/functions/api.mjs` | The shared copy's server at `/api/*`. Thin: connects the logic to Netlify Blobs and env vars. |
+| `netlify/lib/core.mjs` | The server's logic: sign-in, accounts, shared answers, shared exports, the column filter. |
+| `package.json` | One dependency, `@netlify/blobs`, pinned. Netlify installs it at build; no computer here needs npm. |
+| `tests/api.test.mjs` | Server tests (`npm test`). Netlify runs them on every build; a failure stops the deploy. |
+| `tests/shared_server.mjs`, `tests/shared_browser.mjs` | A stand-in of the site, and two real browsers driving shared mode end to end. |
 | `BASELINE.md` | Expected output on a known pair of exports. Your regression check. |
 | `testdata/` | Git-ignored. Where real exports go locally. |
 
 ---
 
-## Three things you must not get wrong
+## Four things you must not get wrong
 
 **1. Never commit a Radius export.** They carry names, addresses, dates of birth and
 medical notes for roughly 400 minors. `.gitignore` covers `testdata/`, `*.xlsx`, `*.xls`
@@ -49,21 +56,34 @@ git config user.email ethanp0811@gmail.com
 
 Verify with `git log --pretty="%h A:%an <%ae> C:%cn <%ce>"`.
 
-**3. The page must never be able to send anything anywhere.** A Content Security Policy
-with `connect-src 'none'` sits in both `netlify.toml` and a `<meta>` tag in `index.html`,
-so fetch, XHR, WebSocket and beacon are all blocked by the browser. Do not add a directive
-that relaxes it, do not add an external script or font, and do not add analytics. The meta
-tag is in the file rather than only in the config because the page gets emailed around and
-a file on a USB stick cannot set headers.
+**3. The page can talk to its own site and nothing else.** A Content Security Policy with
+`connect-src 'self'` sits in both `netlify.toml` and a `<meta>` tag in `index.html`, so
+fetch, XHR, WebSocket and beacon can reach only the site's own `/api` (opened from disk,
+nothing at all). It was `'none'` until the shared copy (25 Oct 2026); `'self'` is as far
+as it goes. Do not add any other origin, an external script or font, or analytics. The
+meta tag is in the file rather than only in the config because the page gets emailed
+around and a file on a USB stick cannot set headers.
+
+**4. The shared copy keeps only the columns the calculator reads.** `sharedCopy()` in the
+page cuts each export down before upload, and `EXPORT_COLUMNS` in `netlify/lib/core.mjs`
+refuses any upload carrying another column. If the page starts reading a new column, add it
+to both lists, or sharing that export will be refused (which is the system working). Never
+widen them to anything the calculation does not use: addresses, birth dates, contacts and
+medical notes must never reach the site.
+
+The same goes for answer records: `cleanRecord()` exists in both `index.html` and
+`netlify/lib/core.mjs` and must stay identical. A new field in an answer record goes into
+both, and into `mergeRecords()` in core.mjs, or it will be dropped on the way to the site.
 
 ---
 
 ## Verifying a change
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
-**Run self-check**. It runs 53 assertions against fixed inputs — rounding, date handling,
-FIFO settlement, hold coverage, absence resolution, schedule inference, the data horizon —
-and needs no exports and no tooling. It takes milliseconds.
+**Run self-check**. It runs 105 assertions against fixed inputs — rounding, date handling,
+FIFO settlement, hold coverage, absence resolution, schedule inference, the data horizon,
+and how shared answers are sent and merged — and needs no exports and no tooling. It takes
+milliseconds.
 
 It is not decoration. Six deliberate rule breakages were introduced to test it, and it
 caught all six: rounding changed to floor, grace widened to three months, hold end made
@@ -84,13 +104,23 @@ python3 tests/e2e_browser.py                    # drop, run, filter, download
 python3 tests/csp_browser.py                    # runs with all network blocked
 ```
 
+**For the shared copy** (needs node 22; Netlify runs the first one on every build):
+
+```bash
+npm install
+npm test                                        # 39 server tests
+node tests/shared_browser.mjs                   # two browsers, setup to sign-out (45 checks)
+SITE_URL=http://localhost:8888 node tests/shared_browser.mjs   # same, against `netlify dev`
+```
+
 The parity script is the strongest check available: it compares the browser engine and the
 Python reference field by field across all 380 students. It must report **0 differing**.
 Playwright needs a browser; `PLAYWRIGHT_BROWSERS_PATH` is already set in the Cowork sandbox.
 
 **The Windows machine this deploys from has git but no node and no npm.** No test runner,
 no linter, no dev server. That is why the self-check is in the page. Never hand over a
-workflow that needs npm.
+workflow that needs npm on that machine: the shared copy's dependency is installed and its
+tests are run by Netlify's build, not locally.
 
 ---
 
@@ -115,8 +145,9 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Review queue | 1139 | Generates questions and applies answers. |
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
 | Writing .xlsx | 1521 | CRC32 plus `CompressionStream`, minimal OOXML. |
-| Self-check | 1767 | The 53 assertions. |
-| Student search | 1913 | Global search, keyboard handling, focus mode. |
+| Shared mode | 2540 | Sign-in, accounts, answer sync (`answerPatch`/`adoptAnswers`), shared exports, the pre-sharing offer. |
+| Self-check | 3275 | The 105 assertions. |
+| Student search | 3560 | Global search, keyboard handling, focus mode. |
 
 Line numbers drift as soon as you edit. Search for the section title instead.
 
@@ -237,10 +268,14 @@ declined for now.
 - **Current month stays schedule-based.** Pace-based projection was offered with numbers
   and rejected; the weekly schedule is inferred as well as possible instead.
 - **Never commit real exports.** Not once, not temporarily.
-- **No AI call from inside the page.** It is offline by design and that is the property
-  that keeps the data local.
-- **Storage is deliberate.** Exports and answers persist in IndexedDB, the page says so,
-  and there is a Forget stored data button.
+- **No AI call from inside the page.** It talks to its own site and nothing else, and that
+  is the property that keeps the data where it belongs.
+- **Storage is deliberate.** On one computer, exports and answers persist in IndexedDB, the
+  page says so, and there is a Forget stored data button. Signed in, they live on the
+  site's own Netlify Blobs instead and nothing is kept in the browser.
+- **Shared copy sign-in is a username and a password, no email** (decided 25 Oct 2026).
+  First admin via `SETUP_CODE`; admins add people with temporary passwords and reset
+  forgotten ones. Do not add email, magic links or third-party sign-in.
 
 ## Known limits, honestly
 
@@ -270,3 +305,16 @@ git push -u origin try-something
 ```
 
 Netlify posts the preview URL. Merge to `main` when it looks right, or delete the branch.
+
+A preview's shared copy is separate from the live one (`netlify/functions/api.mjs` picks
+`preview-` stores for any deploy that is not production). It starts empty: set it up with
+the same SETUP_CODE, and nothing done there touches the live accounts, exports or answers.
+
+Every Netlify build runs `npm test` first; a failing server test stops the deploy.
+
+**Credits.** On Netlify's credit plans each successful production deploy (a commit on
+`main`) costs 15 credits of the free plan's 300 a month. Branch deploys, deploy previews
+and failed deploys cost nothing. So: test on `development` (its branch deploy is
+switched on in Netlify), merge into `main` when it works, and upload a change as one
+commit. `ignore` in `netlify.toml` skips builds for commits that change only unserved
+files (notes, tests, `reference/`); `[skip ci]` in a commit message skips one by hand.

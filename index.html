@@ -4,17 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!--
-  The page must never be able to send anything anywhere. Student data is read from files
-  the user picks and stays in their browser, and this makes that a rule the browser
-  enforces rather than a promise in a README. connect-src 'none' is the one that matters:
-  no fetch, no XHR, no WebSocket, no beacon.
+  The page can talk to one place only: the site it was loaded from. connect-src 'self'
+  is the one that matters. On the Netlify site that is the shared copy's own server
+  (/api, see netlify/functions/api.mjs); everywhere else nothing at all, so opened from
+  disk, a network share or an email attachment, no fetch, XHR, WebSocket or beacon can
+  reach anywhere and student data stays in the browser. No third party, ever: no CDN,
+  no analytics, no fonts.
 
   It lives in the file as well as in netlify.toml so the guarantee survives however the
-  page is opened: from a URL, from a network share, or emailed as a single file. Servers
-  can add headers; a file on a USB stick cannot.
+  page is opened. Servers can add headers; a file on a USB stick cannot.
   (frame-ancestors is not honoured in a meta tag, so netlify.toml carries that one.)
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <title>Makeup Hours — Mathnasium Temple City</title>
 <style>
   :root {
@@ -137,16 +138,90 @@
   .days label { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-size: 12.5px;
                 cursor: pointer; background: var(--panel); }
   .days input { margin-right: 4px; }
+  /* Shared mode: sign-in, accounts, the sync line. */
+  header .hrow { align-items: center; }
+  .who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .who[hidden] { display: none; }
+  .auth { max-width: 460px; margin: 36px auto; }
+  .auth[hidden] { display: none; }
+  .auth h2 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+  .auth form { display: grid; gap: 12px; margin-top: 16px; }
+  .auth label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .auth label[hidden] { display: none; }
+  .auth input, .acct input[type=text] { font: inherit; font-size: 14px; padding: 8px 11px; border: 1px solid var(--line);
+                                        border-radius: 6px; background: var(--panel); color: var(--ink); }
+  .autherr { color: var(--bad); font-size: 13.5px; min-height: 1.2em; }
+  button.linkish { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600;
+                   text-decoration: underline; cursor: pointer; font-size: inherit; }
+  .syncnote { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+  .syncnote[hidden] { display: none; }
+  .syncnote button { margin-left: 4px; }
+  .acct table { margin-top: 10px; }
+  .acct form { margin-top: 14px; }
+  .acct code, .notice code { font: 13px ui-monospace, Menlo, Consolas, monospace; background: #eef2f7;
+                             padding: 1px 6px; border-radius: 4px; color: var(--ink); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Makeup Hours — Mathnasium Temple City</h1>
-  <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+  <div class="hrow">
+    <div>
+      <h1>Makeup Hours — Mathnasium Temple City</h1>
+      <div class="sub" id="headerSub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+    </div>
+    <div class="who" id="whoBar" hidden>
+      <span>Signed in as <b id="whoName"></b></span>
+      <button class="ghost small" id="openAccounts" hidden>Accounts</button>
+      <button class="ghost small" id="openPassword">Change password</button>
+      <button class="ghost small" id="signOut">Sign out</button>
+    </div>
+    <div class="who" id="signInBar" hidden>
+      <span>Using this computer only.</span>
+      <button class="ghost small" id="signIn">Sign in to the shared copy</button>
+    </div>
+  </div>
 </header>
 
 <main>
-  <div class="panel">
+  <div class="panel auth" id="authPanel" hidden>
+    <h2 id="authTitle">Sign in</h2>
+    <div class="sub" id="authIntro"></div>
+    <form id="authForm">
+      <label data-f="code"><span>Setup code</span><input id="fCode" autocomplete="off" spellcheck="false"></label>
+      <label data-f="username"><span>Username</span><input id="fUser" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+      <label data-f="current"><span>Password</span><input id="fCurrent" type="password" autocomplete="current-password"></label>
+      <label data-f="next"><span>New password</span><input id="fNext" type="password" autocomplete="new-password" minlength="8"></label>
+      <label data-f="confirm"><span>New password again</span><input id="fConfirm" type="password" autocomplete="new-password" minlength="8"></label>
+      <div class="row">
+        <button id="authGo" type="submit">Sign in</button>
+        <button class="ghost" type="button" id="authCancel" hidden>Cancel</button>
+      </div>
+      <div class="autherr" id="authErr" role="alert"></div>
+    </form>
+    <div class="sub" id="authLocal" style="margin-top:14px">No account?
+      <button class="linkish" type="button" id="useLocal">Use the calculator on this computer only</button>.
+      Nothing is shared and nothing is uploaded.</div>
+  </div>
+
+  <div class="panel acct" id="accountsPanel" hidden>
+    <div class="row" style="justify-content:space-between">
+      <b>Accounts</b>
+      <button class="ghost small" id="closeAccounts">Close</button>
+    </div>
+    <div class="sub">Everyone signs in with a username and a password; no email. New people get a temporary password and choose their own the first time they sign in. If someone forgets theirs, reset it here.</div>
+    <table id="accountsTable"></table>
+    <form id="addUserForm" class="row">
+      <input type="text" id="newUser" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+      <input type="text" id="newPass" placeholder="temporary password" autocomplete="off" spellcheck="false" required minlength="8">
+      <button class="ghost small" type="button" id="newPassSuggest">New suggestion</button>
+      <label class="sub"><input type="checkbox" id="newAdmin"> admin</label>
+      <button type="submit">Add person</button>
+    </form>
+    <div id="accountsMsg"></div>
+    <div id="backupsBox" style="margin-top:16px"></div>
+  </div>
+
+  <div class="panel" id="intakePanel">
     <div class="drops">
       <div class="drop" id="dropAtt" tabindex="0" role="button">
         <h3>Student Attendance Report</h3>
@@ -165,6 +240,8 @@
       <span class="stamp" id="stamp">No data loaded</span>
     </div>
     <div class="sub" id="storageNote" style="margin-top:10px"></div>
+    <div class="syncnote" id="syncNote" hidden></div>
+    <div class="notice" id="sharedOffer" hidden></div>
     <div id="messages"></div>
     <div id="log"></div>
   </div>
@@ -462,6 +539,7 @@ async function dbClear() {
 }
 
 function describeStorage() {
+  if (shared.on) { describeShared(); return; }
   const note = el("storageNote");
   const saved = [state.attendance, state.roster].filter((s) => s && s.savedAt);
   if (!storageWorks) {
@@ -503,6 +581,24 @@ async function accept(file, which) {
     const buffer = await file.arrayBuffer();
     const sheet = await readSheet(buffer);
     sheet.fileName = file.name;
+    if (shared.on) {
+      // Shared: the cut-down copy goes to the site and everyone gets it. Nothing is
+      // kept in this browser's storage.
+      try {
+        const meta = await shareExport(sheet, which);
+        sheet.savedAt = meta.savedAt;
+      } catch (err) {
+        say("Could not share <b>" + esc(file.name) + "</b>: " + esc(err.message), "error");
+        return;
+      }
+      state[which] = sheet;
+      markLoaded(which, file.name, sheet.records.length, null);
+      sharedLabel(which);
+      el("log").textContent = "";
+      describeShared();
+      showSync();
+      return;
+    }
     state[which] = sheet;
     markLoaded(which, file.name, sheet.records.length, null);
     el("log").textContent = "";
@@ -514,14 +610,19 @@ async function accept(file, which) {
     }
     describeStorage();
   } catch (err) {
-    say("Could not read <b>" + file.name + "</b>: " + err.message, "error");
+    say("Could not read <b>" + esc(file.name) + "</b>: " + esc(err.message), "error");
   }
 }
 
 async function restoreSaved() {
   try {
     const saved = await dbGet("overrides");
-    if (saved && saved.students) overrides = saved;
+    if (saved && saved.students && typeof saved.students === "object") {
+      overrides = { version: saved.version || 1, students: {} };
+      for (const [key, rec] of Object.entries(saved.students)) {
+        if (key !== "__proto__" && recCanon(rec) !== undefined) overrides.students[key] = cleanRecord(rec);
+      }
+    }
   } catch (e) { /* storage refused; carry on with none */ }
   try {
     const [att, ros] = await Promise.all([dbGet("attendance"), dbGet("roster")]);
@@ -950,6 +1051,9 @@ function closeHolds(key, enrolledIn) {
 }
 
 async function saveOverrides() {
+  // Shared: queued and sent to the site in the background (see Shared mode), so an
+  // answer shows straight away rather than after a round trip.
+  if (shared.on) { queueAnswerSync(); return; }
   try { await dbPut("overrides", overrides); } catch (e) { storageWorks = false; }
 }
 
@@ -1858,6 +1962,10 @@ function rerun() {
   report = buildReport(state.attendance, state.roster, todayN);
   render();
   wireTabs();
+  // The numbers now include every answer this page holds, colleagues' too.
+  shared.remote = [];
+  shared.remoteBy = [];
+  showSync();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1914,11 +2022,11 @@ function renderTabs() {
 function detailFor(s) {
   const rows = [];
   rows.push("<dt>Schedule</dt><dd>" + esc(scheduleLabel(s.schedule)) + " &middot; " +
-            s.schedule.sessionHours + " hr sessions &middot; " +
+            esc(s.schedule.sessionHours) + " hr sessions &middot; " +
             (s.schedule.confident ? '<span class="pill ok">confident</span>' : '<span class="pill warn">' + esc(s.schedule.reason) + "</span>") + "</dd>");
-  rows.push("<dt>Plan</dt><dd>" + s.plan + " hrs/month" +
+  rows.push("<dt>Plan</dt><dd>" + esc(s.plan) + " hrs/month" +
     (s.planInfo && s.planInfo.hours !== s.planInfo.raw
-      ? " <span class=\"pill mute\">plan says " + s.planInfo.raw + ", sessions run " + s.planInfo.sessionHours + " hrs</span>"
+      ? " <span class=\"pill mute\">plan says " + esc(s.planInfo.raw) + ", sessions run " + esc(s.planInfo.sessionHours) + " hrs</span>"
       : "") + "</dd>");
   if (s.rec) rows.push("<dt>Enrollment</dt><dd>" + esc(s.rec.status) +
     (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
@@ -1933,11 +2041,11 @@ function detailFor(s) {
         ? monthLabel(h.start) + " through " + monthLabel(prevMonthKey(h.until))
         : monthLabel(h.start) + " onward";
       heldBits.push(esc(label) + ' <button class="ghost tiny" data-delhold="' + esc(s.key) +
-                    '" data-delkind="months" data-delidx="' + i + '" title="Remove this hold">&times;</button>');
+                    '" data-delkind="months" data-delid="' + esc(canon(h)) + '" title="Remove this hold">&times;</button>');
     });
     (s.over.holdDates || []).forEach((h, i) => {
       heldBits.push(esc(h.from + " to " + h.to) + ' <button class="ghost tiny" data-delhold="' + esc(s.key) +
-                    '" data-delkind="dates" data-delidx="' + i + '" title="Remove this hold">&times;</button>');
+                    '" data-delkind="dates" data-delid="' + esc(canon(h)) + '" title="Remove this hold">&times;</button>');
     });
   }
   const monthOpts = report.span.map(([y, m]) =>
@@ -1974,7 +2082,7 @@ function detailFor(s) {
 
   const monthLines = s.months.map((mo) => {
     const ms = s.schedules[mo.y + "-" + mo.m];
-    let line = "<b>" + esc(mo.shortLabel) + "</b>: " + mo.attended + " of " + mo.required + " hrs";
+    let line = "<b>" + esc(mo.shortLabel) + "</b>: " + esc(mo.attended) + " of " + esc(mo.required) + " hrs";
     if (ms && scheduleLabel(ms) !== scheduleLabel(s.schedule)) line += " &middot; schedule " + esc(scheduleLabel(ms));
     if (mo.markerHours) line += " &middot; " + mo.markerHours + " hr(s) redeemed at 12 AM";
     if (mo.isCurrent) line += " &middot; projected " + mo.projected + (mo.remaining ? " with " + mo.remaining + " left" : "");
@@ -2053,7 +2161,7 @@ function renderTable() {
       return '<tr class="head" data-i="' + i + '">' +
         "<td>" + esc(s.display) + "</td>" +
         "<td>" + esc(scheduleLabel(s.schedule)) + (s.schedule.confident ? "" : ' <span class="pill warn">?</span>') + "</td>" +
-        '<td class="num">' + s.plan + "</td>" +
+        '<td class="num">' + esc(s.plan) + "</td>" +
         '<td class="num">' + (s.owed ? '<span class="pill bad">' + s.owed + "</span>" : "&mdash;") + "</td>" +
         '<td class="num">' + (s.toSchedule ? '<span class="pill warn">' + s.toSchedule + "</span>" : "&mdash;") + "</td>" +
         '<td class="num">' + (s.attendedDates.length || "&mdash;") + "</td>" +
@@ -2115,8 +2223,12 @@ function renderTable() {
       e.stopPropagation();
       const rec = ovFor(b.dataset.delhold, false);
       if (!rec) return;
+      // Found by what it is, not where it sat: a colleague's answer can have changed the
+      // list since this row was drawn.
       const list = b.dataset.delkind === "months" ? rec.holds : rec.holdDates;
-      list.splice(+b.dataset.delidx, 1);
+      const at = list.findIndex((h) => canon(h) === b.dataset.delid);
+      if (at === -1) { rerun(); return; }
+      list.splice(at, 1);
       await saveOverrides();
       rerun();
     };
@@ -2396,6 +2508,25 @@ el("download").addEventListener("click", async () => {
 });
 
 el("forget").addEventListener("click", async () => {
+  if (shared.on) {
+    if (!shared.user || !shared.user.admin) return;
+    if (!confirm("Remove both shared exports from the site? Everyone will need them dropped in again. Answers are kept.")) return;
+    try { await api("DELETE", "/exports"); }
+    catch (err) { say("Could not remove the shared exports: " + esc(err.message), "error"); return; }
+    shared.exports = { attendance: null, roster: null };
+    shared.loadedAt = { attendance: null, roster: null };
+    state.attendance = null;
+    state.roster = null;
+    report = null;
+    resetDrops();
+    el("results").hidden = true;
+    el("stamp").className = "stamp";
+    el("stamp").textContent = "No data loaded";
+    clearMessages();
+    describeShared();
+    say("Shared exports removed from the site. Answers are kept.");
+    return;
+  }
   try { await dbClear(); } catch (e) { /* nothing stored, or storage refused */ }
   state.attendance = null;
   state.roster = null;
@@ -2412,6 +2543,828 @@ el("forget").addEventListener("click", async () => {
   describeStorage();
   say("Stored exports erased from this machine.");
 });
+
+/* ---------------------------------------------------------------------------
+   Shared mode.
+
+   On the Netlify site the page can sign in to a shared copy: one set of exports and
+   one set of answers that everyone signed in works from, so a hold entered at one
+   desk shows up on every other screen without passing files around. The server is
+   netlify/functions/api.mjs (logic in netlify/lib/core.mjs); this is the page's half.
+
+   Opened from disk, emailed, or on a host without that server, none of this runs and
+   the page behaves exactly as before: everything local, nothing uploaded. On the site,
+   "Use on this computer only" gives the same.
+
+   What goes to the site, and nowhere else (the CSP allows connections to this site
+   only):
+   - The exports, cut down to the columns this page reads (names, attendance dates,
+     durations, start times, plans, enrollment status and dates) and compressed.
+     Addresses, birth dates, contacts and medical notes in the full Radius exports stay
+     on the computer they were dropped on, and the server refuses any upload that still
+     carries another column.
+   - The answers.
+
+   Answers sync per student. The page remembers what it last agreed with the server
+   (shared.synced), sends only the students that differ, and takes everyone else's
+   changes without overwriting anything entered here that has not been saved yet. Two
+   people answering about the same student at the same moment: the later save wins for
+   that student, as it would at one computer.
+--------------------------------------------------------------------------- */
+
+const SHARED_COLUMNS = {
+  attendance: {
+    label: "Student Attendance Report",
+    required: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)"],
+    allowed: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)", "Sessions Per Month", ...TIME_COLUMNS],
+  },
+  roster: {
+    label: "Students Export",
+    required: ["First Name", "Last Name", "Enrollment Status"],
+    allowed: ["First Name", "Last Name", "Student Id", "Enrollment Status", "Enrollment Start Date",
+              "Enrollment End Date", "Last Attendance Date"],
+  },
+};
+
+const LOCAL_SUB = "Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.";
+const SHARED_SUB = "Signed in to the shared copy: everyone signed in sees the same exports and answers. Only the columns the calculator uses are uploaded.";
+const SIGNIN_SUB = "Sign in to work from the shared copy, or use the calculator on this computer only.";
+
+const shared = {
+  available: false,   // this site has the shared server
+  on: false,          // the page is working from the shared copy (never IndexedDB)
+  signedIn: false,
+  user: null,
+  version: null,      // the answers' ETag and save time, as last seen
+  synced: {},         // student key -> recCanon() of the server's copy, as last seen
+  savedBy: null, savedAt: null,
+  timer: null, retry: null, busy: false, failed: "",
+  exports: { attendance: null, roster: null },
+  loadedAt: { attendance: null, roster: null },
+  newer: null,        // newer shared exports than the ones on screen
+  saves: 0,           // saves started; a poll reply older than the latest save is dropped
+  remote: [],         // students changed by someone else since the report was built
+  remoteBy: [],
+  lastPoll: 0, pollTimer: null,
+  temp: null,         // the temporary password just typed, so it is not asked for twice
+};
+
+class ApiError extends Error {
+  constructor(status, message, data) { super(message); this.status = status; this.data = data || {}; }
+}
+
+/* --- comparing answers ----------------------------------------------------- */
+
+// JSON with object keys sorted, so the same answers always give the same text. The same
+// function is in netlify/lib/core.mjs.
+function canon(v) {
+  if (Array.isArray(v)) return "[" + v.map((x) => canon(x === undefined ? null : x)).join(",") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.keys(v).filter((k) => v[k] !== undefined).sort()
+      .map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+/*
+  One student's answers in exactly the shape this page writes (the fields ovFor() fills
+  in): every field present, every value of the right type, anything else dropped.
+  Everything that arrives from elsewhere (the shared copy, an answers file, this
+  browser's storage) goes through it before the report or the screen sees it, so a
+  bad or hostile record cannot break the report or put markup on the page.
+  Kept identical to cleanRecord() in netlify/lib/core.mjs, which applies it on the site.
+*/
+function cleanRecord(rec) {
+  const r = rec && typeof rec === "object" && !Array.isArray(rec) ? rec : {};
+  const MONTH_KEY = /^\d{4}-\d{2}$/, DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+  const month = (v) => typeof v === "string" && MONTH_KEY.test(v);
+  const day = (v) => typeof v === "string" && DAY_KEY.test(v);
+  const text = (max) => (v) => typeof v === "string" && v.length <= max;
+  const list = (v, max, keep) => (Array.isArray(v) ? v.filter(keep).slice(0, max) : []);
+  const unique = (items) => {
+    const seen = new Set();
+    return items.filter((x) => { const k = canon(x); if (seen.has(k)) return false; seen.add(k); return true; });
+  };
+  const hours = (v, lo, hi) => {
+    const out = {};
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k, x] of Object.entries(v)) if (MONTH_KEY.test(k) && typeof x === "number" && isFinite(x) && x >= lo && x <= hi) out[k] = x;
+    }
+    return out;
+  };
+  return {
+    holds: unique(list(r.holds, 60, (h) => h && month(h.start) && (h.until == null || month(h.until)) && (h.source === undefined || text(40)(h.source)))
+      .map((h) => (h.source === undefined ? { start: h.start, until: h.until || null } : { start: h.start, until: h.until || null, source: h.source }))),
+    holdDates: unique(list(r.holdDates, 60, (h) => h && day(h.from) && day(h.to)).map((h) => ({ from: h.from, to: h.to }))),
+    planHours: hours(r.planHours, 0, 200),
+    hourAdjust: hours(r.hourAdjust, -200, 200),
+    notEnrolled: unique(list(r.notEnrolled, 60, month)),
+    charged: unique(list(r.charged, 60, month)),
+    weekdays: Array.isArray(r.weekdays) ? unique(list(r.weekdays, 7, (d) => Number.isInteger(d) && d >= 0 && d <= 6)) : null,
+    sessionHours: typeof r.sessionHours === "number" && isFinite(r.sessionHours) && r.sessionHours > 0 && r.sessionHours <= 12 ? r.sessionHours : null,
+    planReading: r.planReading === "hours" || r.planReading === "sessions" ? r.planReading : null,
+    note: typeof r.note === "string" ? r.note.slice(0, 2000) : "",
+    answered: unique(list(r.answered, 1000, text(300))),
+    auditChecked: unique(list(r.auditChecked, 1000, text(300))),
+  };
+}
+
+const EMPTY_REC = canon(cleanRecord({}));
+
+// One student's answers as comparable text; undefined when there is nothing in them,
+// so a record made and left empty is the same as no record.
+function recCanon(rec) {
+  if (!rec || typeof rec !== "object") return undefined;
+  const text = canon(cleanRecord(rec));
+  return text === EMPTY_REC ? undefined : text;
+}
+
+// What this browser has changed since it last agreed with the server, and for each
+// student the copy that change was made from (base), so the server can combine it with
+// anything a colleague saved in between instead of overwriting it.
+function answerPatch(students, synced) {
+  const set = {}, remove = [], sent = {}, base = {};
+  for (const key of new Set([...Object.keys(students), ...Object.keys(synced)])) {
+    const mine = recCanon(students[key]);
+    if (mine === synced[key]) continue;
+    if (mine === undefined) remove.push(key);
+    else set[key] = cleanRecord(students[key]);
+    sent[key] = mine;
+    base[key] = synced[key] === undefined ? null : JSON.parse(synced[key]);
+  }
+  return { set, remove, sent, base, empty: !Object.keys(set).length && !remove.length };
+}
+
+// Take the server's copy into `students`, except where this browser has a change the
+// server has not seen yet. Returns the students that changed here because of it.
+function adoptAnswers(students, synced, remote) {
+  const changed = [];
+  for (const key of new Set([...Object.keys(students), ...Object.keys(synced), ...Object.keys(remote)])) {
+    const theirs = recCanon(remote[key]);
+    const mine = recCanon(students[key]);
+    const pending = mine !== synced[key];
+    if (!pending && mine !== theirs) {
+      if (theirs === undefined) delete students[key];
+      else students[key] = cleanRecord(remote[key]);
+      changed.push(key);
+    }
+    if (theirs === undefined) delete synced[key];
+    else synced[key] = theirs;
+  }
+  return changed;
+}
+
+/* --- talking to the site ----------------------------------------------------- */
+
+async function api(method, path, body) {
+  const options = { method, credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" } };
+  if (method !== "GET") options.headers["x-makeup-tracker"] = "1";
+  if (body instanceof Uint8Array) {
+    options.body = body;
+    options.headers["content-type"] = "application/octet-stream";
+  } else if (body !== undefined) {
+    options.body = JSON.stringify(body);
+    options.headers["content-type"] = "application/json";
+  }
+  let res;
+  try { res = await fetch("/api" + path, options); }
+  catch (e) { throw new ApiError(0, "could not reach the site (check the internet connection)"); }
+  const type = res.headers.get("content-type") || "";
+  if (res.ok && !type.includes("json")) return res;
+  let data = null;
+  if (type.includes("json")) { try { data = await res.json(); } catch (e) { data = null; } }
+  if (!res.ok) {
+    const err = new ApiError(res.status, (data && data.error) || "the site answered " + res.status, data);
+    if (res.status === 401 && !["/login", "/setup", "/password"].includes(path)) sessionLost();
+    if (data && data.mustChange) showAuth("mustChange");
+    throw err;
+  }
+  return data;
+}
+
+async function gzipText(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function gunzipText(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Response(stream).text();
+}
+
+// Is this page on the site with the shared server? Never asked when opened from disk.
+async function probeShared() {
+  if (location.protocol !== "https:" && location.protocol !== "http:") return null;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 8000);
+  try {
+    const res = await fetch("/api/session", { credentials: "same-origin", cache: "no-store", signal: stop.signal });
+    if (!res.ok || !(res.headers.get("content-type") || "").includes("json")) return null;
+    const data = await res.json();
+    return data && data.service === "makeup-tracker" ? data : null;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* --- shared answers ---------------------------------------------------------- */
+
+// Which save of the answers this is. The save time is part of it so a change is noticed
+// even where a store hands back no ETag (the Blobs test server does not).
+const answersVersion = (a) => (a && (a.etag || a.savedAt) ? (a.etag || "") + "|" + (a.savedAt || "") : null);
+
+function takeAnswers(res) {
+  const remote = (res.answers && res.answers.students) || {};
+  const changed = adoptAnswers(overrides.students, shared.synced, remote);
+  for (const key of changed) ovFor(key, false);
+  shared.version = answersVersion(res);
+  shared.savedBy = res.savedBy || null;
+  shared.savedAt = res.savedAt || null;
+  if (report && changed.length) {
+    for (const key of changed) if (!shared.remote.includes(key)) shared.remote.push(key);
+    for (const key of changed) {
+      const by = res.meta && res.meta[key] && res.meta[key].by;
+      if (by && !shared.remoteBy.includes(by)) shared.remoteBy.push(by);
+    }
+  }
+  showSync();
+  return changed;
+}
+
+function queueAnswerSync(delay) {
+  if (!shared.on) return;
+  clearTimeout(shared.timer);
+  shared.timer = setTimeout(() => { shared.timer = null; syncAnswers(); }, delay == null ? 400 : delay);
+  showSync();
+}
+
+async function syncAnswers() {
+  if (!shared.on || !shared.signedIn) return;
+  if (shared.busy) { queueAnswerSync(500); return; }
+  const patch = answerPatch(overrides.students, shared.synced);
+  if (patch.empty) { showSync(); return; }
+  shared.busy = true;
+  showSync();
+  try {
+    shared.saves++;
+    const res = await api("PATCH", "/answers", { set: patch.set, remove: patch.remove, base: patch.base });
+    for (const [key, text] of Object.entries(patch.sent)) {
+      if (text === undefined) delete shared.synced[key];
+      else shared.synced[key] = text;
+    }
+    shared.failed = "";
+    clearTimeout(shared.retry);
+    takeAnswers(res);
+  } catch (err) {
+    shared.failed = err.message;
+    clearTimeout(shared.retry);
+    if (err.status !== 401) shared.retry = setTimeout(syncAnswers, 15000);
+  } finally {
+    shared.busy = false;
+    showSync();
+  }
+  if (!shared.failed && !answerPatch(overrides.students, shared.synced).empty) queueAnswerSync(50);
+}
+
+// Save now and report whether everything entered here is on the site.
+async function flushAnswers() {
+  clearTimeout(shared.timer);
+  shared.timer = null;
+  while (shared.busy) await new Promise((r) => setTimeout(r, 100));
+  await syncAnswers();
+  while (shared.busy) await new Promise((r) => setTimeout(r, 100));
+  return !shared.failed && answerPatch(overrides.students, shared.synced).empty;
+}
+
+function unsavedAnswers() {
+  return shared.on && !answerPatch(overrides.students, shared.synced).empty;
+}
+
+/* --- shared exports ---------------------------------------------------------- */
+
+// The export cut down to the columns the calculator reads.
+function sharedCopy(sheet, which) {
+  const spec = SHARED_COLUMNS[which];
+  const headers = spec.allowed.filter((h) => sheet.headers.includes(h));
+  const missing = spec.required.filter((h) => !headers.includes(h));
+  if (missing.length) {
+    throw new Error("this does not look like the " + spec.label + ' (it has no "' + missing[0] + '" column), so it was not shared');
+  }
+  const records = sheet.records.map((r) => {
+    const row = {};
+    for (const h of headers) row[h] = r[h] == null ? "" : String(r[h]);
+    return row;
+  });
+  return { fileName: sheet.fileName, headers, records };
+}
+
+async function shareExport(sheet, which) {
+  const packed = await gzipText(JSON.stringify(sharedCopy(sheet, which)));
+  const res = await api("PUT", "/exports/" + which, packed);
+  shared.exports = res.exports;
+  shared.loadedAt[which] = res.exports[which] && res.exports[which].savedAt;
+  return res.exports[which];
+}
+
+function sharedLabel(which) {
+  const m = shared.exports[which];
+  if (!m) return;
+  const label = el(which === "attendance" ? "nameAtt" : "nameStu");
+  label.textContent = m.fileName + " — " + Number(m.rows).toLocaleString() + " rows (shared by " + m.savedBy + ", " + fmtWhen(m.savedAt) + ")";
+}
+
+async function loadSharedExports(meta) {
+  shared.exports = meta || { attendance: null, roster: null };
+  shared.newer = null;
+  for (const which of ["attendance", "roster"]) {
+    const m = shared.exports[which];
+    if (!m) continue;
+    const res = await api("GET", "/exports/" + which);
+    const data = JSON.parse(await gunzipText(await res.arrayBuffer()));
+    state[which] = { headers: data.headers, records: data.records, serialToDate, fileName: data.fileName || m.fileName, savedAt: m.savedAt };
+    shared.loadedAt[which] = m.savedAt;
+    markLoaded(which, state[which].fileName, data.records.length, null);
+    sharedLabel(which);
+  }
+}
+
+function noteNewerExports(meta) {
+  if (!meta) return;
+  shared.exports = meta;
+  let newer = null;
+  for (const which of ["attendance", "roster"]) {
+    const m = meta[which];
+    if (m && m.savedAt !== shared.loadedAt[which]) newer = { by: m.savedBy, at: m.savedAt };
+  }
+  shared.newer = newer;
+  showSync();
+}
+
+function resetDrops() {
+  for (const [drop, label] of [["dropAtt", "nameAtt"], ["dropStu", "nameStu"]]) {
+    el(drop).classList.remove("loaded");
+    el(label).textContent = "";
+  }
+  el("run").disabled = true;
+}
+
+function describeShared() {
+  const note = el("storageNote");
+  const a = shared.exports.attendance, r = shared.exports.roster;
+  if (!a && !r) {
+    note.textContent = "Nobody has shared the exports yet. Drop them here and everyone signed in will work from the same numbers. Only the columns the calculator uses are uploaded.";
+  } else {
+    note.textContent = "Working from the shared exports. Dropping a newer export replaces it for everyone. Only the columns the calculator uses are kept on the site: names, attendance dates and times, durations, plans, and enrollment status and dates.";
+  }
+  el("forget").hidden = !(shared.user && shared.user.admin && (a || r));
+}
+
+/* --- the status line --------------------------------------------------------- */
+
+function fmtWhen(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const today = new Date();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === today.toDateString() ? "today " + time : d.toLocaleDateString() + " " + time;
+}
+
+function showSync() {
+  const box = el("syncNote");
+  if (!shared.on) { box.hidden = true; return; }
+  box.hidden = false;
+  let html;
+  if (shared.failed) {
+    html = '<span class="bad-txt">Answers not saved yet: ' + esc(shared.failed) + ".</span> Trying again; keep this tab open.";
+  } else if (shared.busy || shared.timer) {
+    html = "Saving answers…";
+  } else if (shared.savedAt) {
+    html = "Answers are shared. Last saved by " + esc(shared.savedBy) + " " + esc(fmtWhen(shared.savedAt)) + ".";
+  } else {
+    html = "Answers are shared with everyone signed in.";
+  }
+  if (shared.remote.length) {
+    html += ' <b>' + esc(shared.remoteBy.join(", ") || "Someone") + " changed answers for " + shared.remote.length +
+      " student" + (shared.remote.length === 1 ? "" : "s") + '.</b> <button class="ghost small" id="syncShow">Update the numbers</button>';
+  }
+  if (shared.newer) {
+    html += " <b>Newer exports were shared by " + esc(shared.newer.by) + " " + esc(fmtWhen(shared.newer.at)) +
+      '.</b> <button class="ghost small" id="syncLoad">Load them</button>';
+  }
+  box.innerHTML = html;
+  const show = el("syncShow");
+  if (show) show.onclick = () => rerun();
+  const load = el("syncLoad");
+  if (load) load.onclick = async () => {
+    load.disabled = true;
+    try {
+      await loadSharedExports(shared.exports);
+      if (state.attendance && state.roster) el("run").click();
+    } catch (err) { say("Could not load the shared exports: " + esc(err.message), "error"); }
+    showSync();
+  };
+}
+
+/* --- polling for colleagues' changes ------------------------------------------ */
+
+async function pollShared(soon) {
+  if (!shared.on || !shared.signedIn || document.hidden || shared.busy) return;
+  if (soon && Date.now() - shared.lastPoll < 20000) return;
+  shared.lastPoll = Date.now();
+  let status;
+  try { status = await api("GET", "/status"); } catch (e) { return; }
+  if (answersVersion(status.answers) !== shared.version && !shared.busy) {
+    const saves = shared.saves;
+    let res;
+    try { res = await api("GET", "/answers"); } catch (e) { return; }
+    // A save that started while this was on its way has newer answers than this reply:
+    // taking it would put back what that save replaced. The next poll catches up.
+    if (shared.busy || shared.saves !== saves) return;
+    takeAnswers(res);
+    if (unsavedAnswers()) queueAnswerSync();
+  }
+  noteNewerExports(status.exports);
+}
+
+function startPolling() {
+  clearInterval(shared.pollTimer);
+  shared.pollTimer = setInterval(() => pollShared(false), 120000);
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollShared(true); });
+window.addEventListener("focus", () => pollShared(true));
+window.addEventListener("beforeunload", (e) => {
+  if (unsavedAnswers()) { e.preventDefault(); e.returnValue = ""; }
+});
+
+/* --- signing in ---------------------------------------------------------------- */
+
+let authMode = null;
+
+const AUTH_TEXT = {
+  login: ["Sign in", "Sign in to the shared makeup calculator. Ask an admin for an account."],
+  setup: ["Set up the shared calculator", "No accounts exist yet. Enter the setup code (the SETUP_CODE environment variable in Netlify) and choose the first username and password. This account is an admin and can add everyone else."],
+  setupOff: ["Setup is turned off", "No accounts exist yet. To make the first one, add an environment variable called SETUP_CODE (8 or more characters) in Netlify under Site configuration → Environment variables, redeploy, and reload this page."],
+  mustChange: ["Choose your own password", "You signed in with a temporary password. Choose your own to carry on; nobody else will know it."],
+  change: ["Change your password", "Your other computers will be signed out."],
+};
+
+function showAuth(mode, message) {
+  authMode = mode;
+  const [title, intro] = AUTH_TEXT[mode];
+  el("authTitle").textContent = title;
+  el("authIntro").textContent = message || intro;
+  const fields = {
+    login: { username: "Username", current: "Password" },
+    setup: { code: "Setup code", username: "Username", next: "Password", confirm: "Password again" },
+    setupOff: {},
+    mustChange: Object.assign(shared.temp ? {} : { current: "Temporary password" }, { next: "New password", confirm: "New password again" }),
+    change: { current: "Current password", next: "New password", confirm: "New password again" },
+  }[mode];
+  el("authForm").querySelectorAll("label[data-f]").forEach((label) => {
+    const name = label.dataset.f;
+    const input = label.querySelector("input");
+    label.hidden = !(name in fields);
+    input.required = name in fields;
+    if (name in fields) label.querySelector("span").textContent = fields[name];
+    if (input.type === "password" || name === "code") input.value = "";
+  });
+  el("authGo").hidden = mode === "setupOff";
+  el("authGo").textContent = mode === "login" ? "Sign in" : mode === "setup" ? "Create the admin account" : "Save the new password";
+  el("authCancel").hidden = mode !== "change";
+  el("authLocal").hidden = shared.on || !["login", "setup", "setupOff"].includes(mode);
+  el("authErr").textContent = "";
+  const blocking = mode !== "change";
+  if (blocking) {
+    el("intakePanel").hidden = true;
+    el("results").hidden = true;
+    el("accountsPanel").hidden = true;
+  }
+  el("authPanel").hidden = false;
+  setMode();
+  const first = [...el("authForm").querySelectorAll("label:not([hidden]) input")].find((i) => !i.value);
+  if (first) first.focus();
+}
+
+function hideAuth() {
+  authMode = null;
+  setMode();
+  el("authPanel").hidden = true;
+  el("intakePanel").hidden = false;
+  if (report) el("results").hidden = false;
+}
+
+function setMode() {
+  const on = shared.on && shared.signedIn;
+  el("whoBar").hidden = !on;
+  el("signInBar").hidden = !(shared.available && !shared.on && authMode === null);
+  if (on) {
+    el("whoName").textContent = shared.user.name;
+    el("openAccounts").hidden = !shared.user.admin;
+  }
+  el("headerSub").textContent = shared.on ? SHARED_SUB : authMode ? SIGNIN_SUB : LOCAL_SUB;
+  el("clearAnswers").hidden = shared.on && !(shared.user && shared.user.admin);
+  el("forget").textContent = shared.on ? "Remove the shared exports" : "Forget stored data";
+}
+
+function sessionLost() {
+  if (!shared.on) return;
+  shared.signedIn = false;
+  clearInterval(shared.pollTimer);
+  showAuth("login", "You have been signed out: sign-ins last 12 hours, and an admin resetting or removing an account ends it. Sign in again to carry on; anything not yet saved is kept and saved once you are back.");
+}
+
+// Signed in: load the shared copy. `resume` keeps answers entered here that the server
+// has not seen yet (signed out mid-session and back in).
+async function enterShared(user) {
+  const resume = shared.on;
+  shared.user = user;
+  shared.available = true;
+  if (user.mustChange) { showAuth("mustChange"); return; }
+  shared.on = true;
+  shared.signedIn = true;
+  hideAuth();
+  setMode();
+  if (!resume) {
+    overrides = { version: 1, students: {} };
+    shared.synced = {};
+    shared.version = null;
+    state.attendance = null;
+    state.roster = null;
+    report = null;
+    resetDrops();
+    el("results").hidden = true;
+    clearMessages();
+    el("log").textContent = "";
+  }
+  shared.remote = [];
+  shared.remoteBy = [];
+  el("stamp").className = "stamp";
+  el("stamp").textContent = "Loading the shared copy…";
+  try {
+    takeAnswers(await api("GET", "/answers"));
+    const list = await api("GET", "/exports");
+    if (!resume || !state.attendance || !state.roster) await loadSharedExports(list.exports);
+    else noteNewerExports(list.exports);
+  } catch (err) {
+    if (err.status !== 401) say("Could not load the shared copy: " + esc(err.message), "error");
+    el("stamp").textContent = "No data loaded";
+    return;
+  }
+  describeShared();
+  startPolling();
+  if (unsavedAnswers()) queueAnswerSync(0);
+  showSync();
+  if (!resume) offerLocalCopy();
+  if (state.attendance && state.roster) {
+    if (!resume || !report) el("run").click();
+    else el("stamp").className = "stamp live";
+  } else {
+    el("stamp").textContent = "No data loaded";
+  }
+}
+
+/* --- answers and exports this computer saved before sharing ---------------------- */
+
+async function offerLocalCopy() {
+  const box = el("sharedOffer");
+  box.hidden = true;
+  let ov, att, ros;
+  try { [ov, att, ros] = await Promise.all([dbGet("overrides"), dbGet("attendance"), dbGet("roster")]); }
+  catch (e) { return; }
+  const students = ov && ov.students ? Object.keys(ov.students).filter((k) => recCanon(ov.students[k]) !== undefined) : [];
+  const hasExports = !!(att && att.bytes && ros && ros.bytes);
+  if (!students.length && !(att || ros)) return;
+  const shareExports = hasExports && !shared.exports.attendance && !shared.exports.roster;
+  const parts = [];
+  if (students.length) parts.push("answers for " + students.length + " student" + (students.length === 1 ? "" : "s"));
+  if (att || ros) parts.push("exports saved " + new Date(Math.max((att && att.savedAt) || 0, (ros && ros.savedAt) || 0)).toLocaleDateString());
+  box.innerHTML = "<b>This computer has its own saved copy from before sharing:</b> " + esc(parts.join(" and ")) + ". " +
+    (students.length || shareExports ? '<button class="small" id="offerAdd">Add it to the shared copy</button> ' : "") +
+    '<button class="ghost small" id="offerErase">Erase it from this computer</button>' +
+    '<div class="sub" style="margin-top:6px">Adding merges these answers into everyone\'s without replacing any answer already shared' +
+    (shareExports ? ", shares the exports (none are shared yet)" : "") +
+    ", then erases this computer's copy.</div>";
+  box.hidden = false;
+
+  const add = el("offerAdd");
+  if (add) add.onclick = async () => {
+    add.disabled = true;
+    try {
+      if (students.length) mergeAnswers(ov, true);
+      if (shareExports) {
+        for (const [which, saved] of [["attendance", att], ["roster", ros]]) {
+          const sheet = await readSheet(saved.bytes);
+          sheet.fileName = saved.name;
+          await shareExport(sheet, which);
+        }
+        await loadSharedExports(shared.exports);
+        describeShared();
+      }
+      if (!(await flushAnswers())) throw new Error(shared.failed || "the answers did not save");
+      await dbClear();
+      box.hidden = true;
+      if (state.attendance && state.roster) el("run").click();
+      say("Added this computer's saved copy to the shared copy and erased it from this computer.");
+    } catch (err) {
+      add.disabled = false;
+      say("Could not add this computer's copy: " + esc(err.message) + ". Nothing was erased.", "error");
+    }
+  };
+  el("offerErase").onclick = async () => {
+    if (!confirm("Erase the exports and answers saved on this computer? The shared copy is not affected.")) return;
+    try { await dbClear(); } catch (e) { /* nothing stored */ }
+    box.hidden = true;
+  };
+}
+
+/* --- accounts (admins) ------------------------------------------------------------ */
+
+// Twelve letters and digits in threes, no look-alikes (0/o, 1/l/i).
+function suggestPassword() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  const out = [];
+  while (out.length < 12) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    for (const b of bytes) if (b < 248 && out.length < 12) out.push(alphabet[b % 31]);
+  }
+  return out.join("").replace(/(.{4})(?=.)/g, "$1-");
+}
+
+function accountsMessage(html, kind) {
+  el("accountsMsg").innerHTML = html ? '<div class="notice' + (kind === "error" ? " err" : "") + '">' + html + "</div>" : "";
+}
+
+function renderAccounts(users) {
+  const me = shared.user.name;
+  el("accountsTable").innerHTML = "<tr><th>Username</th><th>Role</th><th>Password</th><th></th></tr>" + users.map((u) =>
+    "<tr><td><b>" + esc(u.name) + "</b>" + (u.name === me ? " (you)" : "") + "</td>" +
+    "<td>" + (u.admin ? "Admin" : "Staff") + "</td>" +
+    "<td>" + (u.mustChange ? '<span class="pill warn">temporary</span>' : '<span class="pill ok">their own</span>') + "</td>" +
+    '<td class="num">' + (u.name === me ? "" :
+      '<button class="ghost small" data-areset="' + esc(u.name) + '">Reset password</button> ' +
+      '<button class="ghost small" data-aadmin="' + esc(u.name) + '" data-to="' + (u.admin ? "0" : "1") + '">' + (u.admin ? "Remove admin" : "Make admin") + "</button> " +
+      '<button class="ghost small" data-aremove="' + esc(u.name) + '">Remove</button>') + "</td></tr>"
+  ).join("");
+  const act = async (fn) => {
+    try { renderAccounts((await fn()).users); } catch (err) { accountsMessage(esc(err.message), "error"); }
+  };
+  el("accountsTable").querySelectorAll("button[data-areset]").forEach((b) => {
+    b.onclick = () => {
+      const name = b.dataset.areset, temp = suggestPassword();
+      if (!confirm("Reset " + name + "'s password?\n\nTheir temporary password will be:  " + temp +
+                   "\n\nThey are signed out everywhere and choose their own password the next time they sign in.")) return;
+      act(async () => {
+        const res = await api("POST", "/users/" + encodeURIComponent(name) + "/reset", { password: temp });
+        accountsMessage("Reset. Give <b>" + esc(name) + "</b> this temporary password: <code>" + esc(temp) + "</code>");
+        return res;
+      });
+    };
+  });
+  el("accountsTable").querySelectorAll("button[data-aadmin]").forEach((b) => {
+    b.onclick = () => act(() => api("POST", "/users/" + encodeURIComponent(b.dataset.aadmin) + "/admin", { admin: b.dataset.to === "1" }));
+  });
+  el("accountsTable").querySelectorAll("button[data-aremove]").forEach((b) => {
+    b.onclick = () => {
+      const name = b.dataset.aremove;
+      if (!confirm("Remove " + name + "'s account? They are signed out straight away. Their saved answers stay.")) return;
+      act(async () => { const res = await api("DELETE", "/users/" + encodeURIComponent(name)); accountsMessage("Removed " + esc(name) + "."); return res; });
+    };
+  });
+}
+
+// The site keeps a copy of the answers from the first save of each day, and one before
+// any save that clears many students, for 30 days. Downloaded, one goes back in with
+// "Load answers", which merges it into the answers as they are now.
+async function renderBackups() {
+  const box = el("backupsBox");
+  let list;
+  try { list = (await api("GET", "/backups")).backups; }
+  catch (err) { box.innerHTML = ""; return; }
+  if (!list.length) {
+    box.innerHTML = '<div class="sub">Answer backups: none yet. The site keeps a copy of the answers each day, starting with the first save.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="sub"><b>Answer backups</b> (kept 30 days). To put one back, download it and use <b>Load answers</b>; ' +
+    "it is merged into the answers as they are now.</div>" +
+    '<div class="row" style="margin-top:6px">' + list.slice(0, 12).map((b, i) =>
+      '<button class="ghost small" data-backup="' + i + '">' + esc(fmtWhen(b.savedAt)) +
+      (b.reason === "clear" ? " (before a clear)" : "") + " · " + esc(b.students) + " students</button>").join("") + "</div>";
+  box.querySelectorAll("button[data-backup]").forEach((b) => {
+    b.onclick = async () => {
+      const item = list[+b.dataset.backup];
+      try {
+        const doc = await api("GET", "/backups/" + encodeURIComponent(item.name));
+        const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "makeup-answers-backup-" + item.name + ".json";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      } catch (err) { accountsMessage(esc(err.message), "error"); }
+    };
+  });
+}
+
+async function openAccounts() {
+  el("accountsPanel").hidden = false;
+  accountsMessage("");
+  el("newPass").value = suggestPassword();
+  try { renderAccounts((await api("GET", "/users")).users); }
+  catch (err) { accountsMessage(esc(err.message), "error"); }
+  renderBackups();
+  el("accountsPanel").scrollIntoView({ block: "start" });
+}
+
+el("openAccounts").addEventListener("click", openAccounts);
+el("closeAccounts").addEventListener("click", () => { el("accountsPanel").hidden = true; });
+el("newPassSuggest").addEventListener("click", () => { el("newPass").value = suggestPassword(); });
+
+el("addUserForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = el("newUser").value.trim(), password = el("newPass").value;
+  try {
+    const res = await api("POST", "/users", { username: name, password, admin: el("newAdmin").checked });
+    renderAccounts(res.users);
+    accountsMessage("Added <b>" + esc(name.toLowerCase()) + "</b>. Give them their username and this temporary password: <code>" +
+                    esc(password) + "</code>. They choose their own the first time they sign in.");
+    el("newUser").value = "";
+    el("newAdmin").checked = false;
+    el("newPass").value = suggestPassword();
+  } catch (err) {
+    accountsMessage(esc(err.message), "error");
+  }
+});
+
+/* --- the sign-in form and header buttons ------------------------------------------- */
+
+el("authForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const v = (id) => el(id).value;
+  const mode = authMode;
+  el("authErr").textContent = "";
+  if (["setup", "mustChange", "change"].includes(mode) && v("fNext") !== v("fConfirm")) {
+    el("authErr").textContent = "The two new passwords do not match.";
+    return;
+  }
+  el("authGo").disabled = true;
+  try {
+    if (mode === "login") {
+      const res = await api("POST", "/login", { username: v("fUser"), password: v("fCurrent") });
+      shared.temp = res.user.mustChange ? v("fCurrent") : null;
+      await enterShared(res.user);
+    } else if (mode === "setup") {
+      const res = await api("POST", "/setup", { code: v("fCode"), username: v("fUser"), password: v("fNext") });
+      await enterShared(res.user);
+    } else if (mode === "mustChange" || mode === "change") {
+      const current = mode === "mustChange" && shared.temp ? shared.temp : v("fCurrent");
+      const res = await api("POST", "/password", { current, next: v("fNext") });
+      shared.temp = null;
+      if (mode === "mustChange") await enterShared(res.user);
+      else { hideAuth(); say("Password changed. Any other computer signed in as you has been signed out."); }
+    }
+  } catch (err) {
+    el("authErr").textContent = err.message;
+    // A temporary password that stopped working (reset again, say) has to be typed.
+    if (mode === "mustChange" && err.status === 401 && shared.temp) { shared.temp = null; showAuth("mustChange", err.message); }
+  } finally {
+    el("authGo").disabled = false;
+  }
+});
+
+el("authCancel").addEventListener("click", () => hideAuth());
+el("openPassword").addEventListener("click", () => showAuth("change"));
+
+el("signOut").addEventListener("click", async () => {
+  if (unsavedAnswers() && !(await flushAnswers()) &&
+      !confirm("Some answers have not been saved to the site yet. Sign out anyway and lose them?")) return;
+  try { await api("POST", "/logout"); } catch (e) { /* signed out either way */ }
+  // Reloading drops every student's data from this tab's memory.
+  location.reload();
+});
+
+el("useLocal").addEventListener("click", () => {
+  hideAuth();
+  setMode();
+  restoreSaved();
+});
+
+el("signIn").addEventListener("click", () => {
+  if (state.attendance || Object.keys(overrides.students).length) {
+    if (!confirm("Sign in to the shared copy? This computer's own exports and answers stay saved here, and you will be offered the chance to add them to the shared copy.")) return;
+  }
+  showAuth("login");
+});
+
+async function boot() {
+  const session = await probeShared();
+  if (!session) { setMode(); restoreSaved(); return; }
+  shared.available = true;
+  if (session.signedIn) { await enterShared(session.user); return; }
+  showAuth(session.setupNeeded ? (session.setupAllowed ? "setup" : "setupOff") : "login");
+}
 
 /* ---------------------------------------------------------------------------
    Self-check.
@@ -2665,6 +3618,25 @@ function selfCheck() {
                                D(2026, 8, 17).n, D(2026, 8, 16).n, null, [], 0, false);
   is("a week with no attendance keeps its missed days", emptyWeek.missed.length, 2);
 
+  // --- shared answers: what is sent, and what is taken from colleagues ------------------
+  is("an empty record counts as no answers", recCanon(cleanRecord({})), undefined);
+  is("markup in an answer record is dropped", cleanRecord({ planHours: { "2026-08": "<img src=x>" }, sessionHours: "<b>" }).planHours, {});
+  is("a record missing its lists still has them", cleanRecord({ note: "x" }).holds, []);
+  is("field order is not a change", recCanon({ note: "x", weekdays: [1] }) === recCanon({ weekdays: [1], note: "x" }), true);
+  const heldRec = { holds: [{ start: "2026-09", until: null, source: "entered" }] };
+  const agreed = { a: recCanon(heldRec) };
+  const sendB = answerPatch({ a: JSON.parse(JSON.stringify(heldRec)), b: { weekdays: [2] } }, agreed);
+  is("only the changed student is sent", [Object.keys(sendB.set), sendB.remove], [["b"], []]);
+  is("a cleared student is sent as removed", answerPatch({}, agreed).remove, ["a"]);
+  const here = { a: { note: "typed here, not saved yet" } };
+  const lastSeen = { a: recCanon({ note: "old" }) };
+  const taken = adoptAnswers(here, lastSeen, { a: { note: "a colleague's" }, c: { weekdays: [4] } });
+  is("an unsaved answer here survives a colleague's", [here.a.note, taken], ["typed here, not saved yet", ["c"]]);
+  is("and is still sent", Object.keys(answerPatch(here, lastSeen).set), ["a"]);
+  const gone = { a: { note: "old" } };
+  adoptAnswers(gone, { a: recCanon({ note: "old" }) }, {});
+  is("a student a colleague cleared is cleared here", Object.keys(gone), []);
+
   return { ran, fails };
 }
 
@@ -2821,26 +3793,7 @@ el("answerPicker").addEventListener("change", async () => {
     try {
       const loaded = JSON.parse(await file.text());
       if (!loaded || typeof loaded !== "object" || !loaded.students) throw new Error("not an answers file");
-      // Merge rather than replace, so loading a colleague's file does not silently drop
-      // answers already given on this machine.
-      for (const [key, rec] of Object.entries(loaded.students)) {
-        const mine = ovFor(key, true);
-        const seen = new Set(mine.holds.map((h) => h.start + ">" + (h.until || "")));
-        for (const h of rec.holds || []) if (!seen.has(h.start + ">" + (h.until || ""))) mine.holds.push(h);
-        Object.assign(mine.planHours, rec.planHours || {});
-        for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
-        for (const m of rec.charged || []) if (!mine.charged.includes(m)) mine.charged.push(m);
-        if (rec.weekdays) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
-        if (rec.planReading) mine.planReading = rec.planReading;
-        mine.holdDates = mine.holdDates || [];
-        const seenDates = new Set(mine.holdDates.map((h) => h.from + ">" + h.to));
-        for (const h of rec.holdDates || []) if (!seenDates.has(h.from + ">" + h.to)) mine.holdDates.push(h);
-        mine.hourAdjust = Object.assign({}, rec.hourAdjust || {}, mine.hourAdjust || {});
-        mine.auditChecked = mine.auditChecked || [];
-        for (const a of rec.auditChecked || []) if (!mine.auditChecked.includes(a)) mine.auditChecked.push(a);
-        if (rec.note) mine.note = rec.note;
-        for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
-      }
+      mergeAnswers(loaded, false);
       await saveOverrides();
       rerun();
       say("Loaded answers for " + Object.keys(loaded.students).length + " student(s).");
@@ -2852,7 +3805,39 @@ el("answerPicker").addEventListener("change", async () => {
 
 el("importAnswers").addEventListener("click", () => el("answerPicker").click());
 
+/*
+  Merge another set of answers into these rather than replacing them, so loading a
+  colleague's file does not silently drop answers already given here. Lists (holds,
+  months, answered questions) are combined. For single values (schedule, plan reading,
+  note) the loaded file wins, unless keepMine is set, when an answer already here is
+  kept: that is how a computer's pre-sharing answers join the shared copy without
+  overwriting what colleagues have answered since.
+*/
+function mergeAnswers(loaded, keepMine) {
+  for (const [key, raw] of Object.entries(loaded.students)) {
+    if (typeof key !== "string" || key === "__proto__" || recCanon(raw) === undefined) continue;
+    const rec = cleanRecord(raw);
+    const mine = ovFor(key, true);
+    const seen = new Set(mine.holds.map((h) => h.start + ">" + (h.until || "")));
+    for (const h of rec.holds || []) if (!seen.has(h.start + ">" + (h.until || ""))) mine.holds.push(h);
+    mine.planHours = keepMine ? Object.assign({}, rec.planHours || {}, mine.planHours) : Object.assign(mine.planHours, rec.planHours || {});
+    for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
+    for (const m of rec.charged || []) if (!mine.charged.includes(m)) mine.charged.push(m);
+    if (rec.weekdays && !(keepMine && mine.weekdays)) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
+    if (rec.planReading && !(keepMine && mine.planReading)) mine.planReading = rec.planReading;
+    mine.holdDates = mine.holdDates || [];
+    const seenDates = new Set(mine.holdDates.map((h) => h.from + ">" + h.to));
+    for (const h of rec.holdDates || []) if (!seenDates.has(h.from + ">" + h.to)) mine.holdDates.push(h);
+    mine.hourAdjust = Object.assign({}, rec.hourAdjust || {}, mine.hourAdjust || {});
+    mine.auditChecked = mine.auditChecked || [];
+    for (const a of rec.auditChecked || []) if (!mine.auditChecked.includes(a)) mine.auditChecked.push(a);
+    if (rec.note && !(keepMine && mine.note)) mine.note = rec.note;
+    for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
+  }
+}
+
 el("clearAnswers").addEventListener("click", async () => {
+  if (shared.on && !confirm("Clear every saved answer for everyone signed in? This cannot be undone. Save answers to a file first if you might want them back.")) return;
   overrides = { version: 1, students: {} };
   await saveOverrides();
   rerun();
@@ -2870,15 +3855,19 @@ el("run").addEventListener("click", () => {
     el("log").textContent = "";
     render();
     wireTabs();
+    shared.remote = [];
+    shared.remoteBy = [];
+    showSync();
   } catch (err) {
     say("Analysis failed: " + esc(err.message), "error");
     throw err;
   }
 });
 
-restoreSaved();
+boot();
 
 window.__mt = { selfCheck, readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, buildQuestions,
+                shared, answerPatch, adoptAnswers, recCanon, sharedCopy,
                 get overrides() { return overrides; }, set overrides(v) { overrides = v; },
                 get focusKey() { return focusKey; }, renderQueue: () => renderQueue(), roundHours, parseDate, inferSchedule, settle,
                 get report() { return report; } };

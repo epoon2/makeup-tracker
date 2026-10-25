@@ -24,7 +24,7 @@ async def js():
         out = await pg.evaluate("""async (p) => {
             const today = p.today;
             const M = window.__mt;
-            // Bytes rather than fetch: the page's CSP sets connect-src 'none', so the
+            // Bytes rather than fetch: the page's CSP allows connections to its own site only, so the
             // harness has to hand files over the way a user picking a file does.
             const buf = (b64) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
               for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; };

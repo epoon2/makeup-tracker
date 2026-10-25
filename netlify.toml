@@ -1,19 +1,35 @@
-# Static site. There is no build step: index.html is the whole tool and everything it
-# needs is inline.
-[build]
-  publish = "."
-  command = ""
-
-# The page must never be able to send anything anywhere. Student data is read from files
-# the user picks and stays in their browser, and the headers below make that a property
-# the browser enforces rather than a promise in a README.
+# The calculator is index.html, with everything it needs inline. The shared copy (sign-in,
+# shared exports and answers) is one Netlify Function, netlify/functions/api.mjs, keeping
+# its data in Netlify Blobs.
 #
-# connect-src 'none' is the important one: no fetch, no XHR, no WebSocket, no beacon.
-# If a future change tried to POST a roster somewhere, the browser would block it.
+# The build runs on Netlify, not on the computer that pushes: it installs the one
+# dependency (@netlify/blobs), runs the server tests, and only if they pass copies
+# index.html into dist/. Publishing dist/ rather than the repo root means only the page is
+# served, not the tests, the Python reference or these notes.
+[build]
+  publish = "dist"
+  command = "npm test && rm -rf dist && mkdir dist && cp index.html dist/index.html"
+  # Skip the build (and the production deploy it would cost) when a commit changes
+  # nothing that is served: only README, notes, tests or the Python reference. It builds
+  # whenever the page, the server, this file or the dependency changed, and whenever it
+  # cannot tell (first build, a redeploy of the same commit, an unknown last commit).
+  ignore = '[ -n "$CACHED_COMMIT_REF" ] && [ "$CACHED_COMMIT_REF" != "$COMMIT_REF" ] && git diff --quiet "$CACHED_COMMIT_REF" "$COMMIT_REF" -- index.html netlify netlify.toml package.json package-lock.json'
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  directory = "netlify/functions"
+
+# The page can talk to this site and nothing else. connect-src 'self' is the important
+# one: fetch, XHR, WebSocket and beacon can reach only this site's own /api, so student
+# data can never be sent to a third party, and no CDN, analytics or font can load.
+# The same policy sits in a <meta> tag in index.html, so it holds when the file is opened
+# from disk too (where 'self' reaches nothing at all).
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "no-referrer"
     Permissions-Policy = "camera=(), microphone=(), geolocation=(), interest-cohort=()"
