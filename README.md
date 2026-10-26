@@ -146,7 +146,9 @@ with students who owe hours.
 
 ### A full month with no attendance
 
-If a student has no attendance at all in an elapsed month, enrollment decides the outcome.
+A completed month in which a student has no attendance at all **owes nothing**, and the
+review queue never asks about it. The evidence only decides which note the month gets in
+the student's panel.
 
 **`Enrollment Status` is not used to decide it.** That column describes today. A student who
 reads Enrolled now may have been unenrolled, or on hold, during the month in question, so it
@@ -155,19 +157,24 @@ cannot testify about a past month.
 What decides it is attendance, because **attendance can only be recorded for an enrolled
 student**, so a visit on a date proves enrollment on that date. The question becomes whether
 the gap is bracketed by evidence of enrollment on both sides. `Enrollment Start Date` and
-`Last Attendance Date` extend those brackets past the export window, which matters because
-the attendance export begins 1 July 2026 and nothing earlier exists.
+`Last Attendance Date` extend those brackets past the first date in the export, which matters
+because the attendance export starts on 1 August 2026.
 
 | Evidence | Result |
 |---|---|
-| Enrollment started after the month, or ended before it | Not enrolled, no makeups |
-| Nothing after the gap | They stopped coming, no makeups |
-| Nothing before the gap | Had not started yet, no makeups |
-| Bracketed on both sides | Full plan owed, **flagged** with the month and the evidence |
+| Enrollment started after the month, or ended before it | Not enrolled, nothing owed |
+| Nothing after the gap | They stopped coming, nothing owed |
+| Nothing before the gap | Had not started yet, nothing owed |
+| Bracketed on both sides | Taken as a hold or a break, nothing owed |
 
-The last row is granted rather than asserted because an undated hold looks identical to
-enrolled-and-absent from outside, and neither export dates holds. The report names the month
-so it can be checked by hand.
+Only the last row can be wrong in a way that matters: from the outside, an undated hold
+looks the same as being enrolled and absent, and neither export dates holds. At this centre
+an empty month is nearly always a hold or a break, so that is the default, and nothing is
+asked.
+
+If the student really was enrolled and absent, that month's line in their panel has an
+**enrolled and absent: charge N hrs** button. The month is then owed its plan like any other
+short month, for as long as it is one of the judged months. **Undo the charge** takes it back.
 
 ### The current month
 
