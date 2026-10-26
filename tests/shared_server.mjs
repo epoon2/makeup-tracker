@@ -6,7 +6,8 @@
 
   It serves index.html with the same security headers as netlify.toml and answers /api/*
   with the real server code (netlify/lib/core.mjs) on the Netlify Blobs test server, so
-  nothing is stored anywhere but a temporary folder. The setup code is "local-setup-code".
+  nothing is stored anywhere but a temporary folder. The setup code is "local-setup-code"
+  and the Radius sync's token is "local-sync-token-for-trying-the-sync-upload".
   tests/shared_browser.mjs uses it to drive two browsers against one shared copy.
 */
 
@@ -21,6 +22,7 @@ import { createApi } from "../netlify/lib/core.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const SETUP_CODE = "local-setup-code";
+export const SYNC_TOKEN = "local-sync-token-for-trying-the-sync-upload";
 
 // The headers netlify.toml sets on every response, read from the file itself so this
 // stand-in cannot drift from what Netlify serves.
@@ -43,7 +45,7 @@ export async function startSite({ port = 0, iterations = 1000, secureCookie = tr
   const url = "http://localhost:" + blobsPort;
   const open = (name) => getStore({ name, siteID: "local-site", token: "local-token", edgeURL: url, uncachedEdgeURL: url, consistency: "strong" });
   const stores = { authStore: open("makeup-auth"), dataStore: open("makeup-data") };
-  const api = createApi({ ...stores, env: { SETUP_CODE }, cache: {}, iterations, secureCookie });
+  const api = createApi({ ...stores, env: { SETUP_CODE, SYNC_TOKEN }, cache: {}, iterations, secureCookie });
   const headers = netlifyHeaders();
 
   const server = createServer(async (req, res) => {

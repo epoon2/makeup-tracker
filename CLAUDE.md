@@ -24,7 +24,7 @@ repo supports those two.
 | `tests/` | Unit tests for the Python side, plus Playwright scripts driving the real page. |
 | `netlify.toml` | Build (runs the server tests, publishes only `index.html`), functions, security headers. |
 | `netlify/functions/api.mjs` | The shared copy's server at `/api/*`. Thin: connects the logic to Netlify Blobs and env vars. |
-| `netlify/lib/core.mjs` | The server's logic: sign-in, accounts, shared answers, shared exports, the column filter. |
+| `netlify/lib/core.mjs` | The server's logic: sign-in, accounts, shared answers, shared exports, the column filter, the Radius sync's upload. |
 | `package.json` | One dependency, `@netlify/blobs`, pinned. Netlify installs it at build; no computer here needs npm. |
 | `tests/api.test.mjs` | Server tests (`npm test`). Netlify runs them on every build; a failure stops the deploy. |
 | `tests/shared_server.mjs`, `tests/shared_browser.mjs` | A stand-in of the site, and two real browsers driving shared mode end to end. |
@@ -69,7 +69,10 @@ page cuts each export down before upload, and `EXPORT_COLUMNS` in `netlify/lib/c
 refuses any upload carrying another column. If the page starts reading a new column, add it
 to both lists, or sharing that export will be refused (which is the system working). Never
 widen them to anything the calculation does not use: addresses, birth dates, contacts and
-medical notes must never reach the site.
+medical notes must never reach the site. **There is a third copy of the lists** in
+TC-Radius-Helper's `makeup_tracker_push.py` (the Radius sync, which uploads the exports
+twice a day through `PUT /api/sync/exports/...` with the `SYNC_TOKEN` bearer token). Add a
+new column there too, or the synced exports will lack it.
 
 The same goes for answer records: `cleanRecord()` exists in both `index.html` and
 `netlify/lib/core.mjs` and must stay identical. A new field in an answer record goes into
@@ -80,10 +83,10 @@ both, and into `mergeRecords()` in core.mjs, or it will be dropped on the way to
 ## Verifying a change
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
-**Run self-check**. It runs 126 assertions against fixed inputs — rounding, date handling,
+**Run self-check**. It runs 129 assertions against fixed inputs — rounding, date handling,
 the judged window and standalone months, hold coverage, absence resolution, schedule inference, the data horizon,
 session windows, plan reading and per-month plans, a small end-to-end report, and how
-shared answers are sent and merged — and needs no exports and no tooling. It takes
+shared answers are sent and merged, and the stale-sync warning — and needs no exports and no tooling. It takes
 milliseconds.
 
 It is not decoration. Six deliberate rule breakages were introduced to test it, and it
@@ -98,7 +101,7 @@ and record what moved and why.
 **If you have Python available**, the deeper checks are:
 
 ```bash
-python3 -m pytest tests -q                      # 42 unit tests on the Python rules
+python3 -m pytest tests -q                      # 39 unit tests on the Python rules
 node tests/synthetic_exports.mjs                # made-up exports into testdata/, when the real ones are not at hand
 PARITY_TODAY=2026-10-20 python3 tests/parity_browser.py   # parity on those
 python3 -m reference.run testdata/attendance.xlsx testdata/students.xlsx 2026-08-19
@@ -111,7 +114,7 @@ python3 tests/csp_browser.py                    # runs with all network blocked
 
 ```bash
 npm install
-npm test                                        # 39 server tests
+npm test                                        # 44 server tests
 node tests/shared_browser.mjs                   # two browsers, setup to sign-out (45 checks)
 SITE_URL=http://localhost:8888 node tests/shared_browser.mjs   # same, against `netlify dev`
 ```
@@ -149,7 +152,7 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
 | Writing .xlsx | 1521 | CRC32 plus `CompressionStream`, minimal OOXML. |
 | Shared mode | 2590 | Sign-in, accounts, answer sync (`answerPatch`/`adoptAnswers`), shared exports, the pre-sharing offer. |
-| Self-check | 3410 | The 126 assertions. |
+| Self-check | 3430 | The 129 assertions. |
 | Student search | 3770 | Global search, keyboard handling, focus mode. |
 
 Line numbers drift as soon as you edit. Search for the section title instead.
@@ -326,6 +329,14 @@ declined for now.
 - **Shared copy sign-in is a username and a password, no email** (decided 25 Oct 2026).
   First admin via `SETUP_CODE`; admins add people with temporary passwords and reset
   forgotten ones. Do not add email, magic links or third-party sign-in.
+- **The exports come from the Radius sync** (25 Oct 2026). TC-Radius-Helper's twice-daily
+  run already downloads attendance from 8/1/2026 and the students export; after importing
+  them into the master sheet it sends both here, cut down to the used columns, to
+  `PUT /api/sync/exports/<attendance|roster>` with `Authorization: Bearer <SYNC_TOKEN>`.
+  The token can only replace those two exports (access `"sync"` in the routes); a session
+  never opens that route and the token opens no other. Recorded as saved by "Radius sync";
+  the page warns in red when those exports are over 26 hours old (`syncStaleSince`).
+  Do not make the site fetch from Radius itself, and do not give the sync an account.
 
 ## Known limits, honestly
 

@@ -146,9 +146,7 @@ with students who owe hours.
 
 ### A full month with no attendance
 
-A completed month in which a student has no attendance at all **owes nothing**, and the
-review queue never asks about it. The evidence only decides which note the month gets in
-the student's panel.
+If a student has no attendance at all in an elapsed month, enrollment decides the outcome.
 
 **`Enrollment Status` is not used to decide it.** That column describes today. A student who
 reads Enrolled now may have been unenrolled, or on hold, during the month in question, so it
@@ -157,24 +155,19 @@ cannot testify about a past month.
 What decides it is attendance, because **attendance can only be recorded for an enrolled
 student**, so a visit on a date proves enrollment on that date. The question becomes whether
 the gap is bracketed by evidence of enrollment on both sides. `Enrollment Start Date` and
-`Last Attendance Date` extend those brackets past the first date in the export, which matters
-because the attendance export starts on 1 August 2026.
+`Last Attendance Date` extend those brackets past the export window, which matters because
+the attendance export begins 1 July 2026 and nothing earlier exists.
 
 | Evidence | Result |
 |---|---|
-| Enrollment started after the month, or ended before it | Not enrolled, nothing owed |
-| Nothing after the gap | They stopped coming, nothing owed |
-| Nothing before the gap | Had not started yet, nothing owed |
-| Bracketed on both sides | Taken as a hold or a break, nothing owed |
+| Enrollment started after the month, or ended before it | Not enrolled, no makeups |
+| Nothing after the gap | They stopped coming, no makeups |
+| Nothing before the gap | Had not started yet, no makeups |
+| Bracketed on both sides | Full plan owed, **flagged** with the month and the evidence |
 
-Only the last row can be wrong in a way that matters: from the outside, an undated hold
-looks the same as being enrolled and absent, and neither export dates holds. At this centre
-an empty month is nearly always a hold or a break, so that is the default, and nothing is
-asked.
-
-If the student really was enrolled and absent, that month's line in their panel has an
-**enrolled and absent: charge N hrs** button. The month is then owed its plan like any other
-short month, for as long as it is one of the judged months. **Undo the charge** takes it back.
+The last row is granted rather than asserted because an undated hold looks identical to
+enrolled-and-absent from outside, and neither export dates holds. The report names the month
+so it can be checked by hand.
 
 ### The current month
 
@@ -326,6 +319,22 @@ each computer.
   - Admins see them under **Accounts**. To put one back, download it and use **Load
     answers**; it is merged into the answers as they are now.
 
+**The exports can arrive on their own.** The Radius sync (the TC-Radius-Helper GitHub
+run, twice a day) already downloads the attendance export from 8/1/2026 and the students
+export. When it is switched on for this site, it also sends both here, cut down the same
+way, after it has imported them into the master spreadsheet.
+
+- The drop zones then say "shared by Radius sync" with the time. Pages that are open
+  offer **Load them** as with any newer export.
+- If the exports the sync shared are more than a day old, the page says so in red: the
+  sync has stopped, and the numbers are getting stale. Dropping newer exports by hand still
+  works at any time and replaces them for everyone.
+- The sync uses its own token (`SYNC_TOKEN` below), not an account. The token can only
+  replace the two exports: it cannot sign in, read the answers or the exports, or change
+  accounts. The site refuses anything else it sends, with the same column checks as a
+  person's upload.
+- Switching it on is described in TC-Radius-Helper's README ("Makeup tracker").
+
 **A computer that had its own saved copy before sharing.** The first time someone signs
 in on it, the page offers to add that copy to the shared one:
 
@@ -354,7 +363,7 @@ deploy to the live site does (see "Netlify credits" below).
    everything, and commit to `development`.
    - Netlify builds it at `development--<your site name>.netlify.app`. It installs the
      one dependency, runs the server tests, and publishes only `index.html`.
-   - If a test fails, nothing goes live. The deploy log should say "pass 39".
+   - If a test fails, nothing goes live. The deploy log should say "pass 44".
 5. **Try it.** Open that address, enter the setup code, and make an admin account. Add a
    test person, drop the exports, and answer a few questions from two browsers.
    - This test site has its own accounts and data, separate from the live site's.
@@ -368,6 +377,13 @@ deploy to the live site does (see "Netlify credits" below).
 
 Optionally, add `SESSION_SECRET` (32 or more random characters) to sign the sign-in
 cookies. Without it, the site makes its own secret and keeps it in Netlify Blobs.
+
+For the Radius sync to send the exports, add `SYNC_TOKEN`: 32 or more random characters,
+for all deploy contexts, marked as a secret. The same value goes into TC-Radius-Helper as
+the `MAKEUP_TRACKER_TOKEN` secret. Without `SYNC_TOKEN` the sync's upload is switched off
+and refused. Changing it takes effect on the next deploy; a branch deploy is enough for
+the development site, but the live site needs a production deploy (or **Deploys → Trigger
+deploy → Deploy project**, which also costs 15 credits).
 
 Everything lives in **Netlify Blobs** on the site, in two stores:
 
@@ -395,7 +411,8 @@ These cost nothing to deploy:
 - **Failed deploys.**
 
 Page views and the server's work cost a little on any deploy. The shared copy checking for
-colleagues' answers every two minutes comes to a few credits a month.
+colleagues' answers every two minutes comes to a few credits a month. The Radius sync's
+uploads are four small requests a day and deploy nothing.
 
 How to keep production deploys rare:
 
@@ -432,8 +449,8 @@ promised.**
 
 **Checks:**
 
-- `npm test`: 39 server tests (sign-in, lockout, accounts, conflicts and merging, record
-  cleaning, backups, the column filter). They run on every Netlify build.
+- `npm test`: 44 server tests (sign-in, lockout, accounts, conflicts and merging, record
+  cleaning, backups, the column filter, the sync's token). They run on every Netlify build.
 - `node tests/shared_browser.mjs`: two real browsers against a stand-in of the site, from
   setup through answering and sign-out, including a hostile record (45 checks).
 - With `SITE_URL=http://localhost:8888`, the same browser test runs against `netlify dev`

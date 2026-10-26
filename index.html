@@ -2943,6 +2943,17 @@ function resetDrops() {
   el("run").disabled = true;
 }
 
+// The Radius sync replaces both exports twice a day, weekends included, so an export it
+// shared more than a day ago means the sync has stopped and the numbers are going stale.
+const SYNC_NAME = "Radius sync";
+const SYNC_STALE_HOURS = 26;
+function syncStaleSince(meta, nowMs) {
+  const synced = ["attendance", "roster"].map((w) => meta && meta[w]).filter((m) => m && m.savedBy === SYNC_NAME);
+  if (!synced.length) return 0;
+  const oldest = Math.min(...synced.map((m) => m.savedAt || 0));
+  return nowMs - oldest > SYNC_STALE_HOURS * 3600000 ? oldest : 0;
+}
+
 function describeShared() {
   const note = el("storageNote");
   const a = shared.exports.attendance, r = shared.exports.roster;
@@ -2950,6 +2961,14 @@ function describeShared() {
     note.textContent = "Nobody has shared the exports yet. Drop them here and everyone signed in will work from the same numbers. Only the columns the calculator uses are uploaded.";
   } else {
     note.textContent = "Working from the shared exports. Dropping a newer export replaces it for everyone. Only the columns the calculator uses are kept on the site: names, attendance dates and times, durations, plans, and enrollment status and dates.";
+    const stale = syncStaleSince(shared.exports, Date.now());
+    if (stale) {
+      const warn = document.createElement("span");
+      warn.className = "bad-txt";
+      warn.textContent = " The Radius sync last updated the exports " + fmtWhen(stale) +
+        ", more than a day ago, so these numbers may be out of date. Check the Radius sync in GitHub, or drop newer exports here.";
+      note.append(warn);
+    }
   }
   el("forget").hidden = !(shared.user && shared.user.admin && (a || r));
 }
@@ -3755,6 +3774,13 @@ function selfCheck() {
   const gone = { a: { note: "old" } };
   adoptAnswers(gone, { a: recCanon({ note: "old" }) }, {});
   is("a student a colleague cleared is cleared here", Object.keys(gone), []);
+
+  // The stale-sync warning: only for exports the Radius sync shared, after a day and more.
+  const hr = 3600000, at = Date.UTC(2026, 9, 26, 20);
+  const bySync = (h) => ({ savedBy: SYNC_NAME, savedAt: at - h * hr });
+  is("a sync export from this morning is fresh", syncStaleSince({ attendance: bySync(7), roster: bySync(7) }, at), 0);
+  is("a sync export from 27 hours ago is stale", syncStaleSince({ attendance: bySync(27), roster: bySync(7) }, at), at - 27 * hr);
+  is("an export a person shared never warns", syncStaleSince({ attendance: { savedBy: "ethan", savedAt: at - 90 * hr }, roster: null }, at), 0);
 
   return { ran, fails };
 }

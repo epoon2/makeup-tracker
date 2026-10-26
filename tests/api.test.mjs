@@ -534,6 +534,90 @@ describe("shared exports", () => {
   });
 });
 
+describe("the Radius sync's upload", () => {
+  const TOKEN = "sync-token-made-up-for-the-tests-0123456789";
+  const withSync = (env = { SETUP_CODE: CODE, SYNC_TOKEN: TOKEN }) => withAdmin(memory(), { env });
+  const bearer = (token) => ({ authorization: "Bearer " + token });
+
+  test("the right token replaces an export, recorded as the sync", async () => {
+    const s = await withSync();
+    const sync = s.browser("20.1.1.1");
+    const r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer(TOKEN) });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.exports.attendance.savedBy, "Radius sync");
+    assert.equal(r.data.exports.attendance.rows, 2);
+    // A signed-in person sees it and can download it.
+    const listed = await s.admin.call("GET", "/api/exports");
+    assert.equal(listed.data.exports.attendance.savedBy, "Radius sync");
+    const got = await s.admin.call("GET", "/api/exports/attendance");
+    assert.equal(got.status, 200);
+    assert.deepEqual(got.data, attendanceUpload());
+  });
+
+  test("no token, a wrong token, or a token with no SYNC_TOKEN set is refused", async () => {
+    const s = await withSync();
+    const sync = s.browser("20.1.1.2");
+    let r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload() });
+    assert.equal(r.status, 400);
+    r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer(TOKEN + "x") });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /token is wrong/);
+    assert.equal((await s.admin.call("GET", "/api/exports")).data.exports.attendance, null, "nothing was stored");
+
+    for (const env of [{ SETUP_CODE: CODE }, { SETUP_CODE: CODE, SYNC_TOKEN: "short" }]) {
+      const off = await withSync(env);
+      r = await off.browser("20.1.1.3").call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer(env.SYNC_TOKEN || "") });
+      assert.equal(r.status, 400);
+      assert.match(r.data.error, /not switched on/);
+    }
+  });
+
+  test("the token opens nothing else, and a session does not open the sync route", async () => {
+    const s = await withSync();
+    const sync = s.browser("20.1.1.4");
+    for (const [method, path] of [["GET", "/api/exports"], ["GET", "/api/exports/attendance"], ["GET", "/api/answers"],
+                                  ["PUT", "/api/exports/attendance"], ["GET", "/api/users"]]) {
+      const r = await sync.call(method, path, { raw: method === "PUT" ? attendanceUpload() : undefined, headers: bearer(TOKEN) });
+      assert.equal(r.status, 401, method + " " + path + " must not accept the sync token");
+    }
+    const r = await s.admin.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload() });
+    assert.equal(r.status, 400, "a signed-in admin without the token is refused");
+  });
+
+  test("the sync's upload gets the same column checks as a person's", async () => {
+    const s = await withSync();
+    const sync = s.browser("20.1.1.5");
+    const withAddress = gzipSync(Buffer.from(JSON.stringify({ fileName: "x.xlsx",
+      headers: ["First Name", "Last Name", "Enrollment Status", "Address"],
+      records: [{ "First Name": "Test", "Last Name": "Student", "Enrollment Status": "Enrolled", "Address": "1 Main St" }] })));
+    let r = await sync.call("PUT", "/api/sync/exports/roster", { raw: withAddress, headers: bearer(TOKEN) });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /column the calculator does not use/);
+    r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload({ headers: ["First Name", "Last Name", "Attendance Date"] }), headers: bearer(TOKEN) });
+    assert.equal(r.status, 400, "a missing required column is refused");
+    r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: { ...bearer(TOKEN) }, csrf: false });
+    assert.equal(r.status, 400, "the page header is still required");
+  });
+
+  test("wrong tokens lock that connection out for a while", async () => {
+    const s = await withSync();
+    const sync = s.browser("20.1.1.6");
+    for (let i = 0; i < LOCK.ipFails; i++) {
+      await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer("wrong-token-" + i) });
+    }
+    let r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer(TOKEN) });
+    assert.equal(r.status, 429, "even the right token waits out the lock");
+    r = await s.browser("20.1.1.7").call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer(TOKEN) });
+    assert.equal(r.status, 200, "another connection is not affected");
+    s.clock.t += LOCK.lockMs + 1000;
+    r = await sync.call("PUT", "/api/sync/exports/attendance", { raw: attendanceUpload(), headers: bearer(TOKEN) });
+    assert.equal(r.status, 200, "and the lock ends");
+    // Wrong sync tokens never count against signing in from that connection.
+    const signIn = await sync.call("POST", "/api/login", { json: { username: "ethan", password: "first-password" } });
+    assert.equal(signIn.status, 200);
+  });
+});
+
 describe("after review", () => {
   test("thirty guesses at once still meet the ten-try limit", async () => {
     const s = await withAdmin(memory());

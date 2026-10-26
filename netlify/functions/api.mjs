@@ -8,6 +8,10 @@
                     Setup refuses once any account exists.
     SESSION_SECRET  optional. 32+ characters to sign sign-in cookies with; without it a
                     random secret is made and kept in Blobs.
+    SYNC_TOKEN      optional. 32+ characters. Lets the Radius sync replace the two
+                    exports (PUT /api/sync/exports/...); the same value goes into the
+                    TC-Radius-Helper repository as the MAKEUP_TRACKER_TOKEN secret.
+                    Without it the sync route is switched off.
 
   The live site and every other deploy (deploy previews, branch deploys, `netlify dev`)
   keep separate stores: a preview has its own accounts and its own copy of the data,
@@ -34,7 +38,7 @@ export default async (req, context) => {
     // read-change-write cycle depends on.
     authStore: getStore({ name: prefix + "makeup-auth", consistency: "strong" }),
     dataStore: getStore({ name: prefix + "makeup-data", consistency: "strong" }),
-    env: { SETUP_CODE: readEnv("SETUP_CODE"), SESSION_SECRET: readEnv("SESSION_SECRET") },
+    env: { SETUP_CODE: readEnv("SETUP_CODE"), SESSION_SECRET: readEnv("SESSION_SECRET"), SYNC_TOKEN: readEnv("SYNC_TOKEN") },
     cache,
     warnMissingEtag: deployContext === "production",
   });

@@ -29,6 +29,11 @@
   column, so addresses, birth dates and medical notes in the full Radius export can
   never be stored here even if the page had a bug.
 
+  The Radius sync (TC-Radius-Helper's twice-daily GitHub run) replaces the two exports
+  through PUT /api/sync/exports/<attendance|roster> with the SYNC_TOKEN environment
+  variable as a bearer token. That token does nothing else: it cannot sign in, read the
+  answers or the exports, or touch accounts. Without SYNC_TOKEN the route is switched off.
+
   Answer records are cleaned to the shape the page writes (cleanRecord, the same as in
   index.html) before they are stored, so nothing but those fields, with those types, can
   reach another person's page.
@@ -46,6 +51,8 @@ export const SESSION_HOURS = 12;
 // be raised later without breaking existing passwords.
 export const PASSWORD_ITERATIONS = 600000;
 export const MIN_PASSWORD = 8;
+export const MIN_SYNC_TOKEN = 32;
+export const SYNC_NAME = "Radius sync";
 const MAX_PASSWORD = 200;
 const USERNAME = /^[a-z0-9][a-z0-9._-]{1,31}$/;
 
@@ -779,7 +786,15 @@ export function createApi(options) {
   }
 
   async function putExport(req, ctx, match) {
-    const which = match[1];
+    return storeExport(req, match[1], ctx.me.name);
+  }
+
+  // The Radius sync's upload: the same checks as a person's, recorded as the sync.
+  async function syncExport(req, ctx, match) {
+    return storeExport(req, match[1], SYNC_NAME);
+  }
+
+  async function storeExport(req, which, savedBy) {
     const packed = await readBody(req, MAX_EXPORT_UPLOAD);
     let data;
     try {
@@ -791,11 +806,29 @@ export function createApi(options) {
     const metadata = {
       fileName: String(data.fileName || which + ".xlsx").slice(0, 200),
       rows: data.records.length,
-      savedBy: ctx.me.name,
+      savedBy,
       savedAt: now(),
     };
     await dataStore.set(exportKey(which), packed.buffer.slice(packed.byteOffset, packed.byteOffset + packed.length), { metadata });
     return json(200, { exports: await exportsMeta() });
+  }
+
+  /*
+    The sync's token. Refused outright when SYNC_TOKEN is missing or short, so a site
+    nobody set up for the sync has no way in at all. Wrong tokens are counted per
+    connection like wrong passwords, in their own counter.
+  */
+  async function checkSyncToken(req, ip) {
+    const token = String(env.SYNC_TOKEN || "");
+    if (token.length < MIN_SYNC_TOKEN) throw new HttpError(400, "The Radius sync is not switched on for this site.");
+    const key = failKey("sync", ip || "unknown");
+    const until = await lockedUntil(key);
+    if (until) refuse(until);
+    const given = /^Bearer\s+(\S+)$/i.exec(req.headers.get("authorization") || "");
+    if (!given || !sameText(given[1], token)) {
+      await noteFailure(key, LOCK.ipFails);
+      throw new HttpError(400, "The sync token is wrong.");
+    }
   }
 
   async function deleteExports() {
@@ -807,7 +840,8 @@ export function createApi(options) {
   /* --- routing ----------------------------------------------------------- */
 
   // access: "open" anyone; "signed" signed in, even with a temporary password;
-  // "user" signed in with their own password; "admin" the same, and an admin.
+  // "user" signed in with their own password; "admin" the same, and an admin;
+  // "sync" the SYNC_TOKEN bearer token and nothing else.
   const ROUTES = [
     ["GET", /^\/session$/, getSession, "open"],
     ["POST", /^\/setup$/, setup, "open"],
@@ -828,6 +862,7 @@ export function createApi(options) {
     ["GET", /^\/exports\/(attendance|roster)$/, getExport, "user"],
     ["PUT", /^\/exports\/(attendance|roster)$/, putExport, "user"],
     ["DELETE", /^\/exports$/, deleteExports, "admin"],
+    ["PUT", /^\/sync\/exports\/(attendance|roster)$/, syncExport, "sync"],
   ];
 
   /*
@@ -856,8 +891,13 @@ export function createApi(options) {
         if (origin && origin !== url.origin) throw new HttpError(400, "Requests must come from the calculator page.");
       }
 
-      const me = await sessionUser(req);
       const access = route[3];
+      if (access === "sync") {
+        // The sync never has a session, and a session never stands in for the token.
+        await checkSyncToken(req, info && info.ip);
+        return await route[2](req, { me: null, ip: info && info.ip }, path.match(route[1]));
+      }
+      const me = await sessionUser(req);
       if (access !== "open") {
         if (!me) throw new HttpError(401, "Sign in again to carry on.", { signedIn: false });
         if (access !== "signed" && me.user.mustChange) throw new HttpError(409, "Choose a new password first.", { mustChange: true });
