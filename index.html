@@ -4,17 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!--
-  The page must never be able to send anything anywhere. Student data is read from files
-  the user picks and stays in their browser, and this makes that a rule the browser
-  enforces rather than a promise in a README. connect-src 'none' is the one that matters:
-  no fetch, no XHR, no WebSocket, no beacon.
+  The page can talk to one place only: the site it was loaded from. connect-src 'self'
+  is the one that matters. On the Netlify site that is the shared copy's own server
+  (/api, see netlify/functions/api.mjs); everywhere else nothing at all, so opened from
+  disk, a network share or an email attachment, no fetch, XHR, WebSocket or beacon can
+  reach anywhere and student data stays in the browser. No third party, ever: no CDN,
+  no analytics, no fonts.
 
   It lives in the file as well as in netlify.toml so the guarantee survives however the
-  page is opened: from a URL, from a network share, or emailed as a single file. Servers
-  can add headers; a file on a USB stick cannot.
+  page is opened. Servers can add headers; a file on a USB stick cannot.
   (frame-ancestors is not honoured in a meta tag, so netlify.toml carries that one.)
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <title>Makeup Hours — Mathnasium Temple City</title>
 <style>
   :root {
@@ -89,6 +90,9 @@
   .pill.bad { background: #fdeceb; color: var(--bad); }
   .pill.ok { background: #e7f3ea; color: var(--ok); }
   .pill.mute { background: #eef2f7; color: var(--muted); }
+  .pill.mk { background: #eef0fb; color: #4a4fa3; }
+  .detail .note { font-size: 13px; color: var(--ink); padding: 1px 0; }
+  .detail .note::before { content: "• "; color: var(--muted); }
   .detail { background: #fbfcfe; }
   .detail dl { display: grid; grid-template-columns: 150px 1fr; gap: 4px 14px; margin: 4px 0 0; }
   .detail dt { color: var(--muted); font-size: 12.5px; }
@@ -137,16 +141,90 @@
   .days label { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; font-size: 12.5px;
                 cursor: pointer; background: var(--panel); }
   .days input { margin-right: 4px; }
+  /* Shared mode: sign-in, accounts, the sync line. */
+  header .hrow { align-items: center; }
+  .who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .who[hidden] { display: none; }
+  .auth { max-width: 460px; margin: 36px auto; }
+  .auth[hidden] { display: none; }
+  .auth h2 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+  .auth form { display: grid; gap: 12px; margin-top: 16px; }
+  .auth label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .auth label[hidden] { display: none; }
+  .auth input, .acct input[type=text] { font: inherit; font-size: 14px; padding: 8px 11px; border: 1px solid var(--line);
+                                        border-radius: 6px; background: var(--panel); color: var(--ink); }
+  .autherr { color: var(--bad); font-size: 13.5px; min-height: 1.2em; }
+  button.linkish { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600;
+                   text-decoration: underline; cursor: pointer; font-size: inherit; }
+  .syncnote { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+  .syncnote[hidden] { display: none; }
+  .syncnote button { margin-left: 4px; }
+  .acct table { margin-top: 10px; }
+  .acct form { margin-top: 14px; }
+  .acct code, .notice code { font: 13px ui-monospace, Menlo, Consolas, monospace; background: #eef2f7;
+                             padding: 1px 6px; border-radius: 4px; color: var(--ink); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Makeup Hours — Mathnasium Temple City</h1>
-  <div class="sub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+  <div class="hrow">
+    <div>
+      <h1>Makeup Hours — Mathnasium Temple City</h1>
+      <div class="sub" id="headerSub">Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.</div>
+    </div>
+    <div class="who" id="whoBar" hidden>
+      <span>Signed in as <b id="whoName"></b></span>
+      <button class="ghost small" id="openAccounts" hidden>Accounts</button>
+      <button class="ghost small" id="openPassword">Change password</button>
+      <button class="ghost small" id="signOut">Sign out</button>
+    </div>
+    <div class="who" id="signInBar" hidden>
+      <span>Using this computer only.</span>
+      <button class="ghost small" id="signIn">Sign in to the shared copy</button>
+    </div>
+  </div>
 </header>
 
 <main>
-  <div class="panel">
+  <div class="panel auth" id="authPanel" hidden>
+    <h2 id="authTitle">Sign in</h2>
+    <div class="sub" id="authIntro"></div>
+    <form id="authForm">
+      <label data-f="code"><span>Setup code</span><input id="fCode" autocomplete="off" spellcheck="false"></label>
+      <label data-f="username"><span>Username</span><input id="fUser" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+      <label data-f="current"><span>Password</span><input id="fCurrent" type="password" autocomplete="current-password"></label>
+      <label data-f="next"><span>New password</span><input id="fNext" type="password" autocomplete="new-password" minlength="8"></label>
+      <label data-f="confirm"><span>New password again</span><input id="fConfirm" type="password" autocomplete="new-password" minlength="8"></label>
+      <div class="row">
+        <button id="authGo" type="submit">Sign in</button>
+        <button class="ghost" type="button" id="authCancel" hidden>Cancel</button>
+      </div>
+      <div class="autherr" id="authErr" role="alert"></div>
+    </form>
+    <div class="sub" id="authLocal" style="margin-top:14px">No account?
+      <button class="linkish" type="button" id="useLocal">Use the calculator on this computer only</button>.
+      Nothing is shared and nothing is uploaded.</div>
+  </div>
+
+  <div class="panel acct" id="accountsPanel" hidden>
+    <div class="row" style="justify-content:space-between">
+      <b>Accounts</b>
+      <button class="ghost small" id="closeAccounts">Close</button>
+    </div>
+    <div class="sub">Everyone signs in with a username and a password; no email. New people get a temporary password and choose their own the first time they sign in. If someone forgets theirs, reset it here.</div>
+    <table id="accountsTable"></table>
+    <form id="addUserForm" class="row">
+      <input type="text" id="newUser" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+      <input type="text" id="newPass" placeholder="temporary password" autocomplete="off" spellcheck="false" required minlength="8">
+      <button class="ghost small" type="button" id="newPassSuggest">New suggestion</button>
+      <label class="sub"><input type="checkbox" id="newAdmin"> admin</label>
+      <button type="submit">Add person</button>
+    </form>
+    <div id="accountsMsg"></div>
+    <div id="backupsBox" style="margin-top:16px"></div>
+  </div>
+
+  <div class="panel" id="intakePanel">
     <div class="drops">
       <div class="drop" id="dropAtt" tabindex="0" role="button">
         <h3>Student Attendance Report</h3>
@@ -165,6 +243,8 @@
       <span class="stamp" id="stamp">No data loaded</span>
     </div>
     <div class="sub" id="storageNote" style="margin-top:10px"></div>
+    <div class="syncnote" id="syncNote" hidden></div>
+    <div class="notice" id="sharedOffer" hidden></div>
     <div id="messages"></div>
     <div id="log"></div>
   </div>
@@ -182,7 +262,7 @@
       <div id="queueList"></div>
     </div>
     <div class="panel" id="auditPanel" hidden>
-      <div><b id="auditTitle"></b> <span class="sub">these are worth a look in Radius; nothing here changes the numbers</span></div>
+      <div><b id="auditTitle"></b> <span class="sub">the same entry twice, or dated in the future: worth a look in Radius</span></div>
       <div id="auditList"></div>
     </div>
     <div class="cards" id="cards"></div>
@@ -462,6 +542,7 @@ async function dbClear() {
 }
 
 function describeStorage() {
+  if (shared.on) { describeShared(); return; }
   const note = el("storageNote");
   const saved = [state.attendance, state.roster].filter((s) => s && s.savedAt);
   if (!storageWorks) {
@@ -503,6 +584,24 @@ async function accept(file, which) {
     const buffer = await file.arrayBuffer();
     const sheet = await readSheet(buffer);
     sheet.fileName = file.name;
+    if (shared.on) {
+      // Shared: the cut-down copy goes to the site and everyone gets it. Nothing is
+      // kept in this browser's storage.
+      try {
+        const meta = await shareExport(sheet, which);
+        sheet.savedAt = meta.savedAt;
+      } catch (err) {
+        say("Could not share <b>" + esc(file.name) + "</b>: " + esc(err.message), "error");
+        return;
+      }
+      state[which] = sheet;
+      markLoaded(which, file.name, sheet.records.length, null);
+      sharedLabel(which);
+      el("log").textContent = "";
+      describeShared();
+      showSync();
+      return;
+    }
     state[which] = sheet;
     markLoaded(which, file.name, sheet.records.length, null);
     el("log").textContent = "";
@@ -514,14 +613,19 @@ async function accept(file, which) {
     }
     describeStorage();
   } catch (err) {
-    say("Could not read <b>" + file.name + "</b>: " + err.message, "error");
+    say("Could not read <b>" + esc(file.name) + "</b>: " + esc(err.message), "error");
   }
 }
 
 async function restoreSaved() {
   try {
     const saved = await dbGet("overrides");
-    if (saved && saved.students) overrides = saved;
+    if (saved && saved.students && typeof saved.students === "object") {
+      overrides = { version: saved.version || 1, students: {} };
+      for (const [key, rec] of Object.entries(saved.students)) {
+        if (key !== "__proto__" && recCanon(rec) !== undefined) overrides.students[key] = cleanRecord(rec);
+      }
+    }
   } catch (e) { /* storage refused; carry on with none */ }
   try {
     const [att, ros] = await Promise.all([dbGet("attendance"), dbGet("roster")]);
@@ -628,6 +732,52 @@ function parseDate(value) {
 // the rest are fallbacks, and a time inside Attendance Date is the last resort.
 const TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"];
 
+// Columns that may carry the time a session ended. The real export calls it "Departure
+// Time"; the rest are fallbacks. Without one, the end is the start plus the minutes logged.
+const END_TIME_COLUMNS = ["Departure Time", "End Time", "Session End Time", "Session End", "Time Out"];
+
+/*
+  The centre's session windows, by weekday (Monday first), in minutes after midnight. The
+  same windows the Radius roster tool uses for Time In and Time Out, all year round, summer
+  included (confirmed 25 Oct 2026): Mon, Tue, Thu, Fri 2:45-7:15 PM; Wed 1:45-7:15 PM;
+  Sat 8:45 AM-1:15 PM; closed Sunday.
+
+  A visit is a regular session only if it starts no earlier than its day's window opens
+  and ends no later than it closes. Anything else is a makeup - the 12 AM marker is just
+  the most common case. A makeup's hours count for the month it is dated in like any
+  others, but it is not evidence of the weekly schedule or of what the plan number
+  means, and it is never flagged as odd.
+*/
+const SESSION_WINDOWS = [
+  [14 * 60 + 45, 19 * 60 + 15],
+  [14 * 60 + 45, 19 * 60 + 15],
+  [13 * 60 + 45, 19 * 60 + 15],
+  [14 * 60 + 45, 19 * 60 + 15],
+  [14 * 60 + 45, 19 * 60 + 15],
+  [8 * 60 + 45, 13 * 60 + 15],
+  null,
+];
+
+function isMakeupTime(dayN, startMinutes, endMinutes) {
+  if (startMinutes === null || startMinutes === undefined) return false;
+  const w = SESSION_WINDOWS[weekdayOf(dayN)];
+  if (!w || startMinutes < w[0] || startMinutes > w[1]) return true;
+  return endMinutes !== null && endMinutes !== undefined && endMinutes > w[1];
+}
+
+// When a visit ended: an end-time column first, else the start plus the minutes logged.
+function endMinutesFor(row, startMinutes) {
+  for (const col of END_TIME_COLUMNS) {
+    if (col in row) {
+      const t = parseTimeOfDay(row[col]);
+      if (t !== null) return t;
+    }
+  }
+  const minutes = Number(row["Duration (Minutes)"]);
+  if (startMinutes === null || startMinutes === undefined || !isFinite(minutes) || minutes <= 0) return null;
+  return startMinutes + Math.round(minutes);
+}
+
 // A start time as minutes since midnight, or null when the cell says nothing.
 function parseTimeOfDay(value) {
   if (value === null || value === undefined) return null;
@@ -697,9 +847,9 @@ function normalise(attendance, roster) {
     if (!when) { unparsed++; continue; }
     const hours = roundHours(r["Duration (Minutes)"]);
     if (hours <= 0) { zero++; continue; }
-    // 12:00 AM is never a real session (real ones run 1:30-7:30 pm). By convention an
-    // entry logged at exactly midnight is a makeup-redemption marker: its hours credit
-    // the month it is dated in, but it is not evidence of a weekly schedule.
+    // A visit starting outside the session windows (12 AM markers included) is a makeup:
+    // its hours credit the month it is dated in, but it is not evidence of a weekly
+    // schedule. See SESSION_WINDOWS.
     const startMinutes = startMinutesFor(r);
     if (startMinutes !== null) timed++;
     visits.push({
@@ -708,13 +858,13 @@ function normalise(attendance, roster) {
       hours,
       spm: parseInt(r["Sessions Per Month"], 10) || 0,
       startMinutes,
-      marker: startMinutes === 0,
+      marker: isMakeupTime(when.n, startMinutes, endMinutesFor(r, startMinutes)),
     });
   }
   if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
   if (zero) warnings.push(zero + " attendance rows rounded to 0 hours and were ignored");
   if (visits.length && !timed) {
-    warnings.push("the attendance export carries no session start times, so 12 AM makeup-redemption markers cannot be recognised");
+    warnings.push("the attendance export carries no session start times, so makeups (12 AM entries and visits outside session hours) cannot be recognised");
   }
 
   const people = new Map();
@@ -739,7 +889,11 @@ function normalise(attendance, roster) {
     rec.expected = status.toLowerCase() === "enrolled";
     const seen = people.get(key);
     if (!seen) { people.set(key, rec); continue; }
-    clash.add(key);
+    // Old records under the same name are normal (a student who left and re-enrolled),
+    // and the live one is picked below. Two students who really share a name are told
+    // apart in Radius with " *" after the last name, which makes a different name here.
+    // So only two Enrolled records under exactly the same name are worth a warning.
+    if (rec.expected && seen.expected) clash.add(key);
     // Prefer the active record, then the more recently attending one. Either way the
     // student is flagged, so the report says it picked rather than pretending.
     let better = rec.active && !seen.active;
@@ -750,7 +904,7 @@ function normalise(attendance, roster) {
   }
   for (const key of clash) people.get(key).ambiguous = true;
   if (clash.size) {
-    warnings.push(clash.size + " names appear on more than one roster record; those students are flagged rather than silently merged");
+    warnings.push(clash.size + " name(s) belong to more than one Enrolled roster record; those students are flagged. In Radius, two students who share a name get \" *\" after the last name");
   }
   return { visits, people, warnings };
 }
@@ -950,6 +1104,9 @@ function closeHolds(key, enrolledIn) {
 }
 
 async function saveOverrides() {
+  // Shared: queued and sent to the site in the background (see Shared mode), so an
+  // answer shows straight away rather than after a round trip.
+  if (shared.on) { queueAnswerSync(); return; }
   try { await dbPut("overrides", overrides); } catch (e) { storageWorks = false; }
 }
 
@@ -995,7 +1152,7 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
   }
 
   const out = {
-    y, m, required, attended, markerHours, onHold, isCurrent, proratedFrom,
+    y, m, required, attended, markerHours, onHold, isCurrent, proratedFrom, planHours,
     label: MONTHS[m - 1] + " " + y, shortLabel: MON_ABBR[m - 1] + " " + y,
     scheduled: [], missed: [], absentWholeMonth: false, assumedHold: false, basis: "", detail: "", projected: 0, granted: 0, remaining: 0, note: "",
     // The review queue and the ledger both ask "how short was this month".
@@ -1117,15 +1274,15 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
         out.note = out.required + " hrs because they were enrolled and absent all of " +
                    out.label + ", confirmed by hand";
       } else {
-        // A whole month with nothing recorded is assumed to be a hold: at this centre
-        // that is what an empty month almost always is, and charging a full plan for a
-        // month nobody attended produces makeup hours nobody will ever book. The review
-        // queue still asks, so it can be charged.
+        // A whole month with nothing recorded is assumed to be a hold or a break: at this
+        // centre that is what an empty month almost always is, and charging a full plan
+        // for a month nobody attended produces makeup hours nobody will ever book. It is
+        // not asked about (decided 25 Oct 2026); the student's details can charge it.
         out.assumedHold = true;
         out.onHold = true;
         out.required = 0;
-        out.note = "nothing recorded for all of " + out.label + ", so it is assumed to be a hold " +
-                   "and nothing is owed for it; confirm in the queue if they were enrolled and simply absent";
+        out.note = "nothing recorded for all of " + out.label + ", so it is taken as a hold or a break " +
+                   "and nothing is owed for it";
       }
     } else {
       out.note = "enrolled but absent all of " + out.label;
@@ -1135,82 +1292,47 @@ function buildMonth(y, m, visits, schedule, planHours, rec, todayN, dataThroughN
 }
 
 /* ---------------------------------------------------------------------------
-   FIFO settlement inside a two-month grace window
+   What is owed: each month in the window stands alone
+
+   Ethan's rule (25 Oct 2026): a student owes makeups for a completed month exactly when
+   that month's hours fall short of its plan - all of that month's sessions, whatever
+   the dates, makeups logged into it included. Extra hours in a later month do not pay an
+   earlier one; they count for the month they are dated in. Only the months the window
+   covers are judged (judgedWindow): today, that is the month two months back through
+   the current one, so a month's shortfall can be made up for two months and then drops
+   off. The current month never owes anything yet: its gap is projected as hours to book.
 --------------------------------------------------------------------------- */
 
-const GRACE_MONTHS = 2;
+const JUDGED_MONTHS_BACK = 2;
 const monthIndex = (y, m) => y * 12 + (m - 1);
 
 function settle(months) {
-  const debts = [], payments = [];
-  let expired = 0, unused = 0;
+  const debts = [];
   const ordered = [...months].sort((a, b) => monthIndex(a.y, a.m) - monthIndex(b.y, b.m));
-
   for (const month of ordered) {
-    const now = monthIndex(month.y, month.m);
-    // Expire before applying this month's excess, so a lapsed debt can never be paid
-    // by hours attended after it lapsed.
-    for (const debt of debts) {
-      if (!debt.expired && debt.outstanding > 0 && now > debt.expiresAfter) {
-        debt.expired = true;
-        expired += debt.outstanding;
-      }
-    }
-    // A held month requires nothing, so everything attended in it is excess and pays down
-    // earlier debt. That is the point of coming in while on hold. The current month pays
-    // too, from hours already sat (never from the projection): a makeup redeemed today
-    // should clear the old debt today, not at the end of the month.
-    let excess = Math.max(0, month.attended - month.required);
-    if (excess) {
-      for (const debt of debts) {
-        if (excess <= 0) break;
-        if (debt.expired || debt.outstanding <= 0) continue;
-        const applied = Math.min(excess, debt.outstanding);
-        debt.outstanding -= applied;
-        excess -= applied;
-        payments.push({ from: month.label, to: debt.label, hours: applied });
-      }
-      unused += excess;
-    }
-    // The current month never opens a debt: its gap is a projection, reported as
-    // makeups to schedule rather than as hours already owed.
-    if (month.isCurrent) continue;
+    if (month.isCurrent || month.onHold) continue;
     const shortfall = Math.max(0, month.required - month.attended);
-    if (shortfall && !month.onHold) {
-      debts.push({
-        y: month.y, m: month.m, hours: shortfall, outstanding: shortfall, expired: false,
-        label: MON_ABBR[month.m - 1] + " " + month.y,
-        expiresAfter: now + GRACE_MONTHS, basis: month.basis, note: month.note,
-      });
+    if (shortfall) {
+      debts.push({ y: month.y, m: month.m, hours: shortfall, outstanding: shortfall, expired: false,
+                   label: MON_ABBR[month.m - 1] + " " + month.y, basis: month.basis, note: month.note });
     }
   }
-  const owed = debts.filter((d) => !d.expired).reduce((s, d) => s + d.outstanding, 0);
-  return { debts, payments, expired, unused, owed, open: debts.filter((d) => !d.expired && d.outstanding > 0) };
+  const owed = debts.reduce((sum, d) => sum + d.outstanding, 0);
+  return { debts, payments: [], expired: 0, unused: 0, owed, open: debts };
 }
 
 /* ---------------------------------------------------------------------------
    Attendance audit: entries that look off, for a person to check in Radius.
 
-   Deliberately few checks and conservative thresholds: a list with false alarms
-   in it stops being read, which is worse than no list.
+   Deliberately few checks: a list with false alarms in it stops being read, which is
+   worse than no list. Since 25 Oct 2026 it holds only what cannot be right as logged:
+   the same entry twice, and entries dated in the future. Visits outside session hours
+   are makeups (SESSION_WINDOWS), not oddities; extra hours in a month are not a
+   problem (they count for their own month, and a steady excess shows as a "likely bigger plan"
+   note instead); and 2-hour entries for 1-hour students count either way.
 --------------------------------------------------------------------------- */
 
-// The 1:30-7:30 pm window is the WEEKDAY window. The real export shows the centre runs
-// weekend mornings, and Arrival Time is a check-in clock, so sessions routinely end a few
-// minutes past 7:30. What survives contact with the data: weekday starts before 1:30 pm
-// are odd, starts before 8 am are odd on any day, end times are not checked.
-const WEEKDAY_OPEN_MINUTES = 13 * 60 + 30;
-const ANY_DAY_OPEN_MINUTES = 8 * 60;
-// A month running this many hours past its requirement with no 12 AM markers suggests
-// makeup hours folded into longer entries the old way.
-const EXCESS_WORTH_ASKING = 3;
-
-function fmtMinutes(min) {
-  const hh = Math.floor(min / 60), mm = min % 60;
-  return (hh % 12 || 12) + ":" + String(mm).padStart(2, "0") + " " + (hh < 12 ? "AM" : "PM");
-}
-
-function auditVisits(visits, typicalSessionHours, todayN) {
+function auditVisits(visits, todayN) {
   const out = [];
   const seen = new Map();
   const push = (entry) => {
@@ -1228,16 +1350,6 @@ function auditVisits(visits, typicalSessionHours, todayN) {
       push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "future",
              detail: "dated " + fmt(v.date) + ", which has not happened yet" });
     }
-    if (!v.marker && v.startMinutes !== null && v.startMinutes !== undefined) {
-      const weekend = weekdayOf(v.date.n) >= 5;
-      const tooEarly = v.startMinutes < ANY_DAY_OPEN_MINUTES ||
-                       (!weekend && v.startMinutes < WEEKDAY_OPEN_MINUTES);
-      if (tooEarly) {
-        const when = v.startMinutes < ANY_DAY_OPEN_MINUTES ? "before 8 am" : "on a weekday before the 1:30 pm opening";
-        push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "off-hours",
-               detail: "starts " + fmtMinutes(v.startMinutes) + " " + when + ", and is not a 12 AM marker - makeup or typo?" });
-      }
-    }
     if (!v.marker) {
       const dk = v.key + "|" + v.date.n + "|" + v.startMinutes + "|" + v.hours;
       seen.set(dk, (seen.get(dk) || 0) + 1);
@@ -1246,51 +1358,70 @@ function auditVisits(visits, typicalSessionHours, todayN) {
                detail: "two identical entries on the same date and time" });
       }
     }
-    if (!v.marker && typicalSessionHours === 1 && v.hours >= 2) {
-      push({ key: v.key, date: v.date, mk, hours: v.hours, kind: "folded",
-             detail: v.hours + "-hour entry for a student whose sessions run 1 hour - if part of it is a makeup, log that hour as its own 12 AM entry" });
-    }
   }
   return out;
-}
-
-function auditMonth(key, label, required, attended, markerHours, onHold, mk) {
-  if (onHold || required <= 0) return null;
-  if (attended >= required + EXCESS_WORTH_ASKING && markerHours === 0) {
-    return { key, date: null, mk, hours: attended - required, kind: "heavy-month",
-             id: "heavy-month|" + mk + "|0",
-             detail: attended + " hrs in " + label + " against a requirement of " + required + ", with no 12 AM markers - folded makeup hours?" };
-  }
-  return null;
 }
 
 /* ---------------------------------------------------------------------------
    Report assembly
 --------------------------------------------------------------------------- */
 
-function payableWindow(firstN, throughN) {
-  // The span the report is really about: two months back from the newest attendance.
-  // Anything older has expired out of the grace window, so showing the full export range
-  // would overstate what the numbers cover. Clipped to the start of the export, because
-  // with less than two months of data the window is everything there is. Display only;
-  // the calculation still runs over the whole export, since a partial first month cannot
-  // produce a monthly requirement.
-  const through = fromDayNumber(throughN);
-  let y = through.y, m = through.m - 2;
-  if (m <= 0) { m += 12; y -= 1; }
-  const day = Math.min(through.d, lastDayOf(y, m));
-  return { fromN: Math.max(firstN, mkDate(y, m, day).n), toN: throughN };
+/*
+  The months the report judges: from the month two months before today through the
+  current month, whole months (25 Oct 2026). On 25 Oct that is August, September and
+  October; on 1 Nov, September through November. The export starts earlier (1 Aug on);
+  attendance before the window is used only to work out schedules and plans, never to
+  decide what is owed. Returns the first judged month's index and the dates shown in
+  the header: the window's first day (or the export's, if later) to the last attendance.
+*/
+function judgedWindow(todayN, firstN, throughN) {
+  const today = fromDayNumber(todayN);
+  const fromIdx = monthIndex(today.y, today.m) - JUDGED_MONTHS_BACK;
+  const y = Math.floor(fromIdx / 12), m = fromIdx % 12 + 1;
+  const startN = mkDate(y, m, 1).n;
+  return { fromIdx, startN, fromN: Math.max(firstN, startN), toN: throughN };
 }
 
-// What does the plan number mean for this student: hours, or sessions?
-//
-// Radius plans are sold in "sessions per month", and for one-hour students the two
-// readings are the same number. For two-hour students the centre sometimes leaves the
-// plan at 4 while delivering 4 x 2 = 8 hours a month, and the plan cannot always be
-// changed (it is tied to billing). So the meaning is inferred from what full months
-// actually delivered, and a person can pin it either way from the review queue.
-function resolvePlan(rawPlan, visits, todayY, todayM, pinned) {
-  const raw = rawPlan > 0 ? rawPlan : 8;
+/*
+  The plan in force each month, from the Sessions Per Month on that month's attendance
+  rows (the latest row in the month wins). A month with no rows keeps the month before's
+  plan; months before the first row take the first known plan. So a plan that changed in
+  Radius from 8 to 12 counts as 8 for the earlier months and 12 from the change on, and a
+  student's current plan is never applied backwards.
+*/
+function monthlyPlans(visits, span) {
+  const latest = new Map();
+  for (const v of visits) {
+    if (!v.spm) continue;
+    const k = v.date.y + "-" + v.date.m;
+    const was = latest.get(k);
+    if (!was || v.date.n >= was.n) latest.set(k, { n: v.date.n, spm: v.spm });
+  }
+  const own = span.map(([y, m]) => (latest.get(y + "-" + m) || {}).spm || 0);
+  const out = [];
+  let last = 0;
+  for (const x of own) { if (x) last = x; out.push(last); }
+  const first = own.find((x) => x) || 8;
+  for (let i = 0; i < out.length && !out[i]; i++) out[i] = first;
+  return { plans: out, own };
+}
+
+/*
+  What the plan number means for this student: hours, or sessions? For one-hour students
+  the two are the same. For two-hour students the centre sometimes leaves the plan at 4
+  while delivering 4 x 2 = 8 hours, and the plan cannot always be changed (it is tied to
+  billing), so the meaning is read from what the student actually attends:
+    - two or more completed months: the median of each month's real hours as a multiple
+      of that month's plan, against 1 (hours) or the session length (sessions);
+    - otherwise, or on a tie, their weekly pattern: real hours per week they came, over
+      at least three weeks, as a month (x 52/12), against the current plan - decided
+      only when one reading is at most half as far off as the other.
+  Makeups (12 AM, outside session hours) are not evidence. A person can pin either
+  reading from the review queue, which is asked only when neither rule can tell.
+*/
+function resolvePlan(plans, span, visits, todayY, todayM, pinned) {
+  const latestRaw = plans[plans.length - 1];
+  const raw = latestRaw > 0 ? latestRaw : 8;
   const real = visits.filter((v) => v.hours > 0 && !v.marker);
   const out = { hours: raw, raw, sessionHours: 1, reading: "hours", certain: true, source: "plan" };
   if (!real.length) return out;
@@ -1306,23 +1437,45 @@ function resolvePlan(rawPlan, visits, todayY, todayM, pinned) {
   if (pinned === "hours") return Object.assign(out, { source: "override" });
   if (pinned === "sessions") return Object.assign(out, { hours: raw * L, reading: "sessions", source: "override" });
 
-  // Evidence: real (non-marker) hours per completed month with any attendance.
+  // Completed months: real hours as a multiple of that month's plan.
+  const index = new Map(span.map(([y, m], i) => [y + "-" + m, i]));
   const totals = new Map();
   for (const v of real) {
     if (v.date.y === todayY && v.date.m === todayM) continue;
     const k = v.date.y + "-" + v.date.m;
     totals.set(k, (totals.get(k) || 0) + v.hours);
   }
-  const values = [...totals.values()].sort((a, b) => a - b);
-  if (values.length < 2) return Object.assign(out, { certain: false });
+  // A month outside the span (a future-dated entry) is measured against the current plan.
+  const ratios = [...totals].map(([k, h]) => h / ((index.has(k) ? plans[index.get(k)] : 0) || raw)).sort((a, b) => a - b);
+  if (ratios.length >= 2) {
+    const mid = ratios.length >> 1;
+    const typical = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
+    const d1 = Math.abs(typical - 1), d2 = Math.abs(typical - L);
+    if (d2 < d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "inferred" });
+    if (d1 < d2) return out;
+  }
 
-  const mid = values.length >> 1;
-  const typical = values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
-  const d1 = Math.abs(typical - raw), d2 = Math.abs(typical - raw * L);
-  if (d2 < d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "inferred" });
-  if (d1 < d2) return out;
+  // The weekly pattern: Monday-to-Sunday weeks with real attendance.
+  const weeks = new Map();
+  for (const v of real) {
+    const w = Math.floor((v.date.n + 3) / 7);
+    weeks.set(w, (weeks.get(w) || 0) + v.hours);
+  }
+  if (weeks.size >= 3) {
+    let total = 0;
+    for (const h of weeks.values()) total += h;
+    const perMonth = total / weeks.size * 52 / 12;
+    const r = perMonth / raw;
+    const d1 = Math.abs(r - 1), d2 = Math.abs(r - L);
+    if (d2 * 2 <= d1) return Object.assign(out, { hours: raw * L, reading: "sessions", source: "weekly" });
+    if (d1 * 2 <= d2) return Object.assign(out, { source: "weekly" });
+  }
   return Object.assign(out, { certain: false });
 }
+
+// The standard plans, smallest first. Used only for the "may be on a bigger plan" note.
+const PLAN_TIERS = [4, 8, 12];
+const BIGGER_PLAN_MONTHS = 3;
 
 function buildReport(attendance, roster, todayN) {
   const { visits, people, warnings } = normalise(attendance, roster);
@@ -1332,6 +1485,8 @@ function buildReport(attendance, roster, todayN) {
   const firstN = Math.min(...visits.map((v) => v.date.n));
   const today = fromDayNumber(todayN);
   const dataThrough = fromDayNumber(dataThroughN);
+  const win = judgedWindow(todayN, firstN, dataThroughN);
+  const judging = (mo) => monthIndex(mo.y, mo.m) >= win.fromIdx;
   let holdsClosed = 0;
   const firstDate = fromDayNumber(firstN);
 
@@ -1349,10 +1504,12 @@ function buildReport(attendance, roster, todayN) {
 
   const students = [];
   for (const [key, list] of grouped) {
-    const rawPlan = (list.find((v) => v.spm) || {}).spm || 8;
     const rec = people.get(key) || null;
     const over = ovFor(key, false);
-    const planInfo = resolvePlan(rawPlan, list, today.y, today.m, over ? over.planReading : null);
+    const monthly = monthlyPlans(list, span);
+    const planInfo = resolvePlan(monthly.plans, span, list, today.y, today.m, over ? over.planReading : null);
+    // Hours per plan unit: the session length when the plan counts sessions, else 1.
+    const unit = planInfo.reading === "sessions" ? planInfo.sessionHours : 1;
     const plan = planInfo.hours;
 
     if (over && rec && rec.status.toLowerCase() === "enrolled") {
@@ -1367,60 +1524,84 @@ function buildReport(attendance, roster, todayN) {
     }
 
     const schedules = {};
-    const months = span.map(([y, m]) => {
+    const months = span.map(([y, m], i) => {
       const firstN = mkDate(y, m, 1).n;
       const lastN = mkDate(y, m, lastDayOf(y, m)).n;
-      let s = inferScheduleForMonth(list, plan, firstN, lastN);
+      const monthPlan = monthly.plans[i] * unit;
+      let s = inferScheduleForMonth(list, monthPlan, firstN, lastN);
       if (over && over.weekdays) {
         s = { weekdays: [...over.weekdays].sort((a, b) => a - b),
               sessionHours: over.sessionHours || s.sessionHours,
               confident: true, reason: "set by hand" };
       }
       schedules[y + "-" + m] = s;
-      return buildMonth(y, m, list, s, plan, rec, todayN, dataThroughN, over, holdRanges,
+      return buildMonth(y, m, list, s, monthPlan, rec, todayN, dataThroughN, over, holdRanges,
                         over && over.hourAdjust ? over.hourAdjust[monthKey(y, m)] || 0 : 0,
                         !!(over && (over.charged || []).includes(monthKey(y, m))));
     });
     // The student-level schedule is the one that applied most recently, since that is what
     // someone reading the row wants. Earlier months keep their own.
     const schedule = schedules[span[span.length - 1][0] + "-" + span[span.length - 1][1]];
-    const ledger = settle(months);
-    const current = months.find((mo) => mo.isCurrent) || null;
+    // Only the window's months are judged; earlier ones only fed schedules and plans.
+    const judged = months.filter(judging);
+    const ledger = settle(judged);
+    const current = judged.find((mo) => mo.isCurrent) || null;
+    // flags: worth checking. notes: worth knowing, nothing to do.
     const flags = [];
+    const notes = [];
     if (planInfo.reading === "sessions") {
       flags.push("plan " + planInfo.raw + "/month read as " + planInfo.raw + " sessions of " +
                  planInfo.sessionHours + " hrs = " + plan + " hrs/month" +
-                 (planInfo.source === "override" ? " (set by hand)" : " (from the attendance pattern)"));
+                 (planInfo.source === "override" ? " (set by hand)" : planInfo.source === "weekly"
+                   ? " (from their weekly pattern)" : " (from the attendance pattern)"));
     }
     if (!schedule.confident) flags.push("schedule uncertain: " + schedule.reason);
     if (over && over.note) flags.push("note: " + over.note);
-    if (rec && rec.ambiguous) flags.push("more than one roster record under this name");
+    if (rec && rec.ambiguous) flags.push("two Enrolled roster records under exactly this name");
     if (!rec) flags.push("no roster record matched");
-    for (const mo of months) {
-      if (mo.assumedHold) {
-        flags.push(mo.label + " assumed to be a hold; nothing owed for it");
-      } else if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE) {
-        flags.push(mo.required + " hrs charged for " + mo.label + "; enrolled and absent, confirmed by hand");
+
+    // A plan change Radius shows: confirmed, so said straight away.
+    let lastOwn = 0;
+    monthly.own.forEach((x, i) => {
+      if (!x) return;
+      if (lastOwn && x !== lastOwn) {
+        notes.push("Plan changed in Radius from " + lastOwn + " to " + x + "/month in " +
+                   MONTHS[span[i][1] - 1] + " " + span[i][0] + " (from the attendance export)");
+      }
+      lastOwn = x;
+    });
+    // Attending at the next plan level month after month: inferred, so said as likely,
+    // and gone again as soon as a month drops back.
+    const done = months.map((mo, i) => ({ mo, raw: monthly.plans[i] }))
+      .filter(({ mo }) => !mo.isCurrent && !mo.onHold && mo.required > 0);
+    const run = done.slice(-BIGGER_PLAN_MONTHS);
+    if (run.length === BIGGER_PLAN_MONTHS) {
+      const next = PLAN_TIERS.find((t) => t > run[run.length - 1].raw);
+      const regular = run.map(({ mo }) => mo.attended - mo.markerHours);
+      if (next && run.every(({ raw }) => raw === run[run.length - 1].raw) &&
+          regular.every((h) => h >= next * unit)) {
+        notes.push("Likely on " + (next === 8 || next === 11 || next === 18 ? "an " : "a ") + next + "/month plan: came " + regular.join(", ") + " regular hrs in " +
+                   run.map(({ mo }) => mo.shortLabel).join(", ") + " against a plan of " + run[run.length - 1].raw +
+                   " (inferred from attendance, not shown in Radius)");
       }
     }
-    const audit = auditVisits(list, schedule.sessionHours, todayN);
-    for (const mo of months) {
-      const entry = auditMonth(key, mo.label, mo.required, mo.attended, mo.markerHours, mo.onHold, monthKey(mo.y, mo.m));
-      if (entry) audit.push(entry);
-    }
+    // Empty months are explained on their own line under By month, with the button to
+    // charge them, so they are not repeated here.
+    const inWindow = list.filter((v) => v.date.n >= win.startN);
+    const audit = auditVisits(inWindow, todayN);
     const onSched = new Set(schedule.weekdays);
-    const attendedDates = list
-      .map((v) => ({ n: v.date.n, hours: v.hours, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
+    const attendedDates = inWindow
+      .map((v) => ({ n: v.date.n, hours: v.hours, marker: v.marker, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
-      plan, planInfo, schedule, schedules, months, ledger, rec, flags, current, attendedDates, over, audit,
+      plan, planInfo, schedule, schedules, months: judged, ledger, rec, flags, notes, current, attendedDates, over, audit,
       // Held right now, which is what the On hold list means. Driven by the current
       // month rather than roster status, so a hold entered by hand lands on the list.
       onHold: current ? current.onHold : !!(rec && rec.onHold),
       owed: ledger.owed,
       toSchedule: current && !current.onHold ? Math.max(0, current.required - current.projected) : 0,
-      missed: months.flatMap((mo) => mo.missed).sort((a, b) => a - b),
+      missed: judged.flatMap((mo) => mo.missed).sort((a, b) => a - b),
     });
   }
 
@@ -1429,10 +1610,6 @@ function buildReport(attendance, roster, todayN) {
     .filter((r) => !attendedKeys.has(r.key) && r.expected)
     .sort((a, b) => displayName(a.key).localeCompare(displayName(b.key)));
 
-  const elapsed = span.filter(([y, m]) => !(y === today.y && m === today.m));
-  if (elapsed.length < 2) {
-    warnings.push("only " + elapsed.length + " completed month(s) of attendance are available, so the two-month grace window cannot settle debt against a later month yet");
-  }
   const shakyGrant = students.reduce((a, s) => a + (s.current && !s.schedule.confident ? s.current.granted : 0), 0);
   const totalGrant = students.reduce((a, s) => a + (s.current ? s.current.granted : 0), 0);
   if (shakyGrant) {
@@ -1443,14 +1620,13 @@ function buildReport(attendance, roster, todayN) {
     warnings.push(shaky + " of " + students.length + " schedules could not be inferred confidently; their missed dates and behind-pace flags are estimates");
   }
 
-  const win = payableWindow(firstN, dataThroughN);
   if (holdsClosed) {
     warnings.push(holdsClosed + " hold(s) ended automatically because this export shows those students enrolled again");
     saveOverrides();
   }
   return {
     today, dataThrough, span, students, neverAttended, warnings,
-    windowFrom: fromDayNumber(win.fromN), windowTo: fromDayNumber(win.toN),
+    windowFrom: fromDayNumber(win.fromN), windowTo: fromDayNumber(win.toN), exportFrom: fromDayNumber(firstN),
     owing: students.filter((s) => s.owed > 0 && !s.onHold).sort((a, b) => b.owed - a.owed || a.display.localeCompare(b.display)),
     behind: students.filter((s) => s.toSchedule > 0 && !s.onHold).sort((a, b) => b.toSchedule - a.toSchedule || a.display.localeCompare(b.display)),
     held: students.filter((s) => s.onHold).sort((a, b) => a.display.localeCompare(b.display)),
@@ -1476,59 +1652,12 @@ function wasAnswered(key, id) {
   return !!(rec && rec.answered.includes(id));
 }
 
-function gapLooksLikeAHold(student, mo) {
-  // A hold usually lines up with month boundaries: they attend to the end of the previous
-  // month, vanish for exactly this one, and come back at the start of the next. A holiday
-  // is raggeder than that. This is a guess and is labelled as one.
-  const first = mkDate(mo.y, mo.m, 1).n;
-  const last = mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n;
-  const before = student.attendedDates.filter((v) => v.n < first).map((v) => v.n);
-  const after = student.attendedDates.filter((v) => v.n > last).map((v) => v.n);
-  if (!before.length || !after.length) return false;
-  const endedLate = last - Math.max(...before) <= 38;
-  const resumedEarly = Math.min(...after) - last <= 10;
-  return endedLate && resumedEarly;
-}
-
 function buildQuestions(rep) {
   const out = [];
   for (const s of rep.students) {
-    // 1. A whole month with nothing recorded that the data could not explain.
-    for (const mo of s.months) {
-      if (!mo.absentWholeMonth || mo.basis !== UNVERIFIABLE) continue;
-      const mk = monthKey(mo.y, mo.m);
-      const id = "absent:" + mk;
-      if (wasAnswered(s.key, id) || (s.over && isHeld(s.over, mk))) continue;
-      const likelyHold = gapLooksLikeAHold(s, mo);
-      // 'Not enrolled' only differs from 'on hold' when the hold would keep running, and a
-      // hold closes the moment an export shows the student enrolled. So for anyone the
-      // roster already reads as Enrolled the two answers are identical, and offering both
-      // is asking a question with one answer wearing two labels.
-      const offerNotEnrolled = !(s.rec && s.rec.status.toLowerCase() === "enrolled");
-      out.push({
-        cat: likelyHold ? "hold" : "absent",
-        key: s.key, id, who: s.display,
-        ask: "No attendance at all in " + mo.label + ", but they were on the roster either side. " +
-             "That is assumed to be a hold, so nothing is owed for it. Is that right?" +
-             (offerNotEnrolled
-               ? " On hold also covers every month after this one until an export shows them enrolled again; not enrolled applies to " + mo.label + " on its own."
-               : ""),
-        options: [
-          { label: "Yes, on hold", suggest: true, apply: () => {} },
-          { label: "Still on hold now", apply: () => {
-              ovFor(s.key, true).holds.push({ start: mk, until: null, source: "entered" }); } },
-          { label: "On hold — pick the months", datesPicker: true,
-            defaultMonth: mk,
-            defaultFrom: fmt(fromDayNumber(mkDate(mo.y, mo.m, 1).n)),
-            defaultTo: fmt(fromDayNumber(mkDate(mo.y, mo.m, lastDayOf(mo.y, mo.m)).n)) },
-          { label: "No — enrolled and absent, charge " + s.plan + " hrs", apply: () => {
-              ovFor(s.key, true).charged.push(mk); } },
-        ].concat(offerNotEnrolled
-          ? [{ label: "Not enrolled, " + monthLabel(mk) + " only", apply: () => {
-                ovFor(s.key, true).notEnrolled.push(mk); } }]
-          : []),
-      });
-    }
+    // A whole month with nothing recorded is not asked about any more (25 Oct 2026): it
+    // is taken as a hold or a break, nothing is owed, and the student's details have a
+    // button to charge it instead.
 
     // 2. Stopped partway through an elapsed month and never came back.
     const elapsed = s.months.filter((mo) => !mo.isCurrent);
@@ -1610,10 +1739,9 @@ function buildQuestions(rep) {
       }
     }
   }
-  // Grouped so a person can work through one kind of answer at a time - the Radius hold
-  // screen open for the hold batch, then the rest - instead of context-switching per
-  // student. Likely holds first because they are the cheapest to confirm.
-  const ORDER = ["hold", "absent", "stopped", "plan", "schedule"];
+  // Grouped so a person can work through one kind of answer at a time instead of
+  // context-switching per student.
+  const ORDER = ["stopped", "plan", "schedule"];
   out.sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.who.localeCompare(b.who));
   return out;
 }
@@ -1631,8 +1759,6 @@ function saveHoldDates(key, from, to) {
 }
 
 const QUEUE_HEADINGS = {
-  hold: "Looks like a hold — the Radius hold screen can confirm these",
-  absent: "A whole month with no attendance",
   stopped: "Stopped attending partway through a month",
   plan: "What the plan number means",
   schedule: "Schedules that had to be guessed",
@@ -1649,30 +1775,12 @@ function auditOptions(e) {
     const rec = ovFor(e.key, true);
     for (const [mk, d] of deltas) rec.hourAdjust[mk] = (rec.hourAdjust[mk] || 0) + d;
   } });
-  if (e.kind === "off-hours") {
-    return [check("Real session or makeup at that time"), check("Typo - I will fix it in Radius")];
-  }
   if (e.kind === "future") {
     return [check("Wrong date - I will fix it in Radius")];
   }
   if (e.kind === "duplicate") {
     return [check("Both entries really happened"),
             adjust("Duplicate - ignore " + e.hours + " hr(s)", [[e.mk, -e.hours]])];
-  }
-  if (e.kind === "folded") {
-    const prior = report.span
-      .map(([y, m]) => monthKey(y, m))
-      .filter((mk) => mkIndex(mk) < mkIndex(e.mk));
-    const opts = [check("Real long session, all in this month"),
-                  check("1 hr was a makeup for this same month")];
-    for (const mk of prior.slice(-2)) {
-      opts.push(adjust("1 hr was a makeup for " + monthLabel(mk), [[e.mk, -1], [mk, 1]]));
-    }
-    return opts;
-  }
-  if (e.kind === "heavy-month") {
-    return [check("Real - the extra hours pay older debt"),
-            adjust("Double-logged - remove " + e.hours + " hr(s)", [[e.mk, -e.hours]])];
   }
   return [check("Checked")];
 }
@@ -1685,8 +1793,10 @@ function renderAudit() {
       if (!checked.includes(a.id)) entries.push({ who: s.display, ...a });
     }
   }
-  const totalChecked = report.students.reduce((n, s) =>
-    n + (((s.over && s.over.auditChecked) || []).length), 0);
+  const totalChecked = report.students.reduce((n, s) => {
+    const checked = (s.over && s.over.auditChecked) || [];
+    return n + s.audit.filter((a) => checked.includes(a.id)).length;
+  }, 0);
   const scoped = focusKey ? entries.filter((e) => e.key === focusKey) : entries;
   scoped.sort((a, b) => a.who.localeCompare(b.who) || ((a.date ? a.date.n : 0) - (b.date ? b.date.n : 0)));
   const panel = el("auditPanel");
@@ -1705,7 +1815,7 @@ function renderAudit() {
   const groups = [...byStudent.entries()];
   const flat = [];
   el("auditTitle").textContent = scoped.length + " attendance entr" + (scoped.length === 1 ? "y" : "ies") +
-    " look odd, across " + groups.length + " student" + (groups.length === 1 ? "" : "s") +
+    " cannot be right as logged, across " + groups.length + " student" + (groups.length === 1 ? "" : "s") +
     (totalChecked ? " · " + totalChecked + " checked" : "");
   el("auditList").innerHTML = groups.slice(0, 25).map(([who, list]) =>
     '<div class="q"><div class="who">' + esc(who) + ' <span class="pill mute">' + list.length + "</span></div>" +
@@ -1735,7 +1845,8 @@ function renderQueue() {
   queue = buildQuestions(report);
   if (focusKey) queue = queue.filter((q) => q.key === focusKey);
   const panel = el("queuePanel");
-  const anyAnswers = Object.keys(overrides.students).length > 0;
+  const answeredCount = Object.keys(overrides.students).filter((k) => recCanon(overrides.students[k]) !== undefined).length;
+  const anyAnswers = answeredCount > 0;
   panel.hidden = !queue.length && !anyAnswers && !focusKey;
   if (panel.hidden) {
     // Clear as well as hide. Leaving the old questions in the DOM means a later unhide
@@ -1748,7 +1859,7 @@ function renderQueue() {
     ? queue.length + " thing" + (queue.length === 1 ? "" : "s") + " the exports could not tell me"
     : focusKey ? "Nothing to confirm for this student" : "Nothing left to confirm";
   el("queueSub").textContent = anyAnswers
-    ? "· " + Object.keys(overrides.students).length + " student(s) have saved answers"
+    ? "· " + answeredCount + " student(s) have saved answers"
     : "";
 
   const list = el("queueList");
@@ -1761,7 +1872,8 @@ function renderQueue() {
 
   let lastCat = null;
   list.innerHTML = queue.slice(0, 40).map((q, i) =>
-    (q.cat !== lastCat ? '<div class="qhead">' + esc(QUEUE_HEADINGS[(lastCat = q.cat)] || "") + "</div>" : "") +
+    (q.cat !== lastCat ? '<div class="qhead">' + esc(QUEUE_HEADINGS[(lastCat = q.cat)] || "") +
+      " (" + queue.filter((x) => x.cat === q.cat).length + ")</div>" : "") +
     '<div class="q"><div class="who">' + esc(q.who) + "</div>" +
     '<div class="ask">' + esc(q.ask) + "</div>" +
     '<div class="opts">' + q.options.map((o, j) =>
@@ -1858,6 +1970,10 @@ function rerun() {
   report = buildReport(state.attendance, state.roster, todayN);
   render();
   wireTabs();
+  // The numbers now include every answer this page holds, colleagues' too.
+  shared.remote = [];
+  shared.remoteBy = [];
+  showSync();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1914,11 +2030,11 @@ function renderTabs() {
 function detailFor(s) {
   const rows = [];
   rows.push("<dt>Schedule</dt><dd>" + esc(scheduleLabel(s.schedule)) + " &middot; " +
-            s.schedule.sessionHours + " hr sessions &middot; " +
+            esc(s.schedule.sessionHours) + " hr sessions &middot; " +
             (s.schedule.confident ? '<span class="pill ok">confident</span>' : '<span class="pill warn">' + esc(s.schedule.reason) + "</span>") + "</dd>");
-  rows.push("<dt>Plan</dt><dd>" + s.plan + " hrs/month" +
+  rows.push("<dt>Plan</dt><dd>" + esc(s.plan) + " hrs/month" +
     (s.planInfo && s.planInfo.hours !== s.planInfo.raw
-      ? " <span class=\"pill mute\">plan says " + s.planInfo.raw + ", sessions run " + s.planInfo.sessionHours + " hrs</span>"
+      ? " <span class=\"pill mute\">plan says " + esc(s.planInfo.raw) + ", sessions run " + esc(s.planInfo.sessionHours) + " hrs</span>"
       : "") + "</dd>");
   if (s.rec) rows.push("<dt>Enrollment</dt><dd>" + esc(s.rec.status) +
     (s.rec.start ? " since " + fmt(s.rec.start) : " (no start date on record)") + "</dd>");
@@ -1933,11 +2049,11 @@ function detailFor(s) {
         ? monthLabel(h.start) + " through " + monthLabel(prevMonthKey(h.until))
         : monthLabel(h.start) + " onward";
       heldBits.push(esc(label) + ' <button class="ghost tiny" data-delhold="' + esc(s.key) +
-                    '" data-delkind="months" data-delidx="' + i + '" title="Remove this hold">&times;</button>');
+                    '" data-delkind="months" data-delid="' + esc(canon(h)) + '" title="Remove this hold">&times;</button>');
     });
     (s.over.holdDates || []).forEach((h, i) => {
       heldBits.push(esc(h.from + " to " + h.to) + ' <button class="ghost tiny" data-delhold="' + esc(s.key) +
-                    '" data-delkind="dates" data-delidx="' + i + '" title="Remove this hold">&times;</button>');
+                    '" data-delkind="dates" data-delid="' + esc(canon(h)) + '" title="Remove this hold">&times;</button>');
     });
   }
   const monthOpts = report.span.map(([y, m]) =>
@@ -1974,27 +2090,36 @@ function detailFor(s) {
 
   const monthLines = s.months.map((mo) => {
     const ms = s.schedules[mo.y + "-" + mo.m];
-    let line = "<b>" + esc(mo.shortLabel) + "</b>: " + mo.attended + " of " + mo.required + " hrs";
+    let line = "<b>" + esc(mo.shortLabel) + "</b>: " + esc(mo.attended) + " of " + esc(mo.required) + " hrs";
     if (ms && scheduleLabel(ms) !== scheduleLabel(s.schedule)) line += " &middot; schedule " + esc(scheduleLabel(ms));
-    if (mo.markerHours) line += " &middot; " + mo.markerHours + " hr(s) redeemed at 12 AM";
+    if (mo.markerHours) line += " &middot; " + mo.markerHours + " makeup hr(s)";
     if (mo.isCurrent) line += " &middot; projected " + mo.projected + (mo.remaining ? " with " + mo.remaining + " left" : "");
     if (mo.proratedFrom) line += " &middot; prorated from " + fmt(mo.proratedFrom);
     if (mo.note) line += '<br><span style="color:var(--muted)">' + esc(mo.note) + "</span>";
+    // An empty month is taken as a hold or a break without asking; if it was not,
+    // charge it here. And a charged month can be taken back.
+    const mk = monthKey(mo.y, mo.m);
+    if (mo.assumedHold) {
+      line += ' <button class="ghost tiny" data-charge="' + esc(s.key) + '" data-mk="' + mk + '">enrolled and absent: charge ' +
+              esc(mo.planHours) + " hrs</button>";
+    } else if (mo.absentWholeMonth && mo.basis === UNVERIFIABLE && s.over && (s.over.charged || []).includes(mk)) {
+      line += ' <button class="ghost tiny" data-uncharge="' + esc(s.key) + '" data-mk="' + mk + '">undo the charge</button>';
+    }
     return line;
   });
   rows.push("<dt>By month</dt><dd>" + monthLines.join("<br>") + "</dd>");
 
-  if (s.ledger.payments.length) {
-    rows.push("<dt>Paid off</dt><dd>" + s.ledger.payments.map((p) =>
-      p.hours + " hr(s) of " + esc(p.to) + " covered by " + esc(p.from)).join("<br>") + "</dd>");
+  if (s.ledger.debts.length) {
+    rows.push("<dt>Owed for</dt><dd>" + s.ledger.debts.map((d) =>
+      esc(d.label) + ": " + d.hours + " hr(s) short").join("<br>") + "</dd>");
   }
-  if (s.ledger.expired) rows.push("<dt>Expired unpaid</dt><dd>" + s.ledger.expired + " hrs past the two-month grace</dd>");
 
   if (s.attendedDates.length) {
     // Off-schedule visits are marked, because those are the ones already doing makeup
     // work. A 2-hour visit is marked too, since it counts double toward the month.
     rows.push("<dt>Came on</dt><dd class=\"dates\">" + s.attendedDates.map((v) => {
       const label = fmtShort(fromDayNumber(v.n)) + (v.hours > 1 ? " (" + v.hours + "h)" : "");
+      if (v.marker) return '<span class="pill mk" title="a makeup: logged at 12 AM or outside session hours">' + label + " makeup</span>";
       return v.onSchedule ? label : '<span class="pill ok" title="off their regular days, counts as makeup">' + label + "</span>";
     }).join(" &middot; ") + "</dd>");
   } else {
@@ -2005,6 +2130,9 @@ function detailFor(s) {
       s.missed.map((n) => fmtShort(fromDayNumber(n))).join(" &middot; ") + "</dd>");
   } else {
     rows.push("<dt>Missed dates</dt><dd style=\"color:var(--muted)\">none</dd>");
+  }
+  if (s.notes && s.notes.length) {
+    rows.push("<dt>Notes</dt><dd>" + s.notes.map((t) => '<div class="note">' + esc(t) + "</div>").join("") + "</dd>");
   }
   if (s.flags.length) {
     rows.push("<dt>Check</dt><dd>" + s.flags.map((f) => '<span class="pill warn">' + esc(f) + "</span>").join(" ") + "</dd>");
@@ -2036,11 +2164,11 @@ function renderTable() {
 
   wrap.innerHTML =
     '<div class="sub" style="margin:2px 0 8px">' +
-    '<b>Makeup hrs owed</b> are unpaid hours from months that already closed, still inside the two-month grace. ' +
+    '<b>Makeup hrs owed</b>: for each of the last two completed months, how far that month alone fell short of its plan. ' +
     '<b>Hrs to book now</b> is what this month is short after projecting the sessions left in it, so it shrinks as they attend.</div>' +
     '<table><thead><tr><th>Student</th><th>Schedule</th>' +
     '<th class="num">Plan<span class="hsub">hrs/month</span></th>' +
-    '<th class="num" title="Unpaid shortfall hours from months that already closed, inside the two-month grace">' +
+    '<th class="num" title="For each of the last two completed months, how far that month alone fell short of its plan">' +
     'Makeup hrs owed<span class="hsub">past months</span></th>' +
     '<th class="num" title="What this month is still short after projecting the sessions left in it">' +
     'Hrs to book now<span class="hsub">this month</span></th>' +
@@ -2053,7 +2181,7 @@ function renderTable() {
       return '<tr class="head" data-i="' + i + '">' +
         "<td>" + esc(s.display) + "</td>" +
         "<td>" + esc(scheduleLabel(s.schedule)) + (s.schedule.confident ? "" : ' <span class="pill warn">?</span>') + "</td>" +
-        '<td class="num">' + s.plan + "</td>" +
+        '<td class="num">' + esc(s.plan) + "</td>" +
         '<td class="num">' + (s.owed ? '<span class="pill bad">' + s.owed + "</span>" : "&mdash;") + "</td>" +
         '<td class="num">' + (s.toSchedule ? '<span class="pill warn">' + s.toSchedule + "</span>" : "&mdash;") + "</td>" +
         '<td class="num">' + (s.attendedDates.length || "&mdash;") + "</td>" +
@@ -2115,8 +2243,23 @@ function renderTable() {
       e.stopPropagation();
       const rec = ovFor(b.dataset.delhold, false);
       if (!rec) return;
+      // Found by what it is, not where it sat: a colleague's answer can have changed the
+      // list since this row was drawn.
       const list = b.dataset.delkind === "months" ? rec.holds : rec.holdDates;
-      list.splice(+b.dataset.delidx, 1);
+      const at = list.findIndex((h) => canon(h) === b.dataset.delid);
+      if (at === -1) { rerun(); return; }
+      list.splice(at, 1);
+      await saveOverrides();
+      rerun();
+    };
+  });
+  wrap.querySelectorAll("button[data-charge], button[data-uncharge]").forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      const key = b.dataset.charge || b.dataset.uncharge;
+      const rec = ovFor(key, true);
+      if (b.dataset.charge) { if (!rec.charged.includes(b.dataset.mk)) rec.charged.push(b.dataset.mk); }
+      else rec.charged = rec.charged.filter((mk) => mk !== b.dataset.mk);
       await saveOverrides();
       rerun();
     };
@@ -2146,7 +2289,9 @@ function renderTable() {
 function render() {
   el("results").hidden = false;
   el("stamp").className = "stamp live";
-  el("stamp").textContent = "Calculating " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
+  el("stamp").textContent = "Judging " + fmtLong(report.windowFrom) + " – " + fmtLong(report.windowTo) +
+                            (report.exportFrom.n < report.windowFrom.n
+                              ? " (visits from " + fmtLong(report.exportFrom) + " help with schedules)" : "") +
                             "  ·  last attendance " + fmtLong(report.dataThrough) +
                             "  ·  run " + fmtLong(report.today);
   renderCards();
@@ -2311,7 +2456,7 @@ async function workbook(sheets) {
 }
 
 function exportRows() {
-  const stamp = "calculating " + fmtLong(report.windowFrom) + " to " + fmtLong(report.windowTo) +
+  const stamp = "judging " + fmtLong(report.windowFrom) + " to " + fmtLong(report.windowTo) +
                 ", last attendance " + fmtLong(report.dataThrough) + ", run " + fmtLong(report.today);
 
   const owes = [["Student", "Plan (hrs/mo)", "Schedule", "Schedule confident",
@@ -2396,6 +2541,25 @@ el("download").addEventListener("click", async () => {
 });
 
 el("forget").addEventListener("click", async () => {
+  if (shared.on) {
+    if (!shared.user || !shared.user.admin) return;
+    if (!confirm("Remove both shared exports from the site? Everyone will need them dropped in again. Answers are kept.")) return;
+    try { await api("DELETE", "/exports"); }
+    catch (err) { say("Could not remove the shared exports: " + esc(err.message), "error"); return; }
+    shared.exports = { attendance: null, roster: null };
+    shared.loadedAt = { attendance: null, roster: null };
+    state.attendance = null;
+    state.roster = null;
+    report = null;
+    resetDrops();
+    el("results").hidden = true;
+    el("stamp").className = "stamp";
+    el("stamp").textContent = "No data loaded";
+    clearMessages();
+    describeShared();
+    say("Shared exports removed from the site. Answers are kept.");
+    return;
+  }
   try { await dbClear(); } catch (e) { /* nothing stored, or storage refused */ }
   state.attendance = null;
   state.roster = null;
@@ -2412,6 +2576,847 @@ el("forget").addEventListener("click", async () => {
   describeStorage();
   say("Stored exports erased from this machine.");
 });
+
+/* ---------------------------------------------------------------------------
+   Shared mode.
+
+   On the Netlify site the page can sign in to a shared copy: one set of exports and
+   one set of answers that everyone signed in works from, so a hold entered at one
+   desk shows up on every other screen without passing files around. The server is
+   netlify/functions/api.mjs (logic in netlify/lib/core.mjs); this is the page's half.
+
+   Opened from disk, emailed, or on a host without that server, none of this runs and
+   the page behaves exactly as before: everything local, nothing uploaded. On the site,
+   "Use on this computer only" gives the same.
+
+   What goes to the site, and nowhere else (the CSP allows connections to this site
+   only):
+   - The exports, cut down to the columns this page reads (names, attendance dates,
+     durations, start times, plans, enrollment status and dates) and compressed.
+     Addresses, birth dates, contacts and medical notes in the full Radius exports stay
+     on the computer they were dropped on, and the server refuses any upload that still
+     carries another column.
+   - The answers.
+
+   Answers sync per student. The page remembers what it last agreed with the server
+   (shared.synced), sends only the students that differ, and takes everyone else's
+   changes without overwriting anything entered here that has not been saved yet. Two
+   people answering about the same student at the same moment: the later save wins for
+   that student, as it would at one computer.
+--------------------------------------------------------------------------- */
+
+const SHARED_COLUMNS = {
+  attendance: {
+    label: "Student Attendance Report",
+    required: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)"],
+    allowed: ["First Name", "Last Name", "Attendance Date", "Duration (Minutes)", "Sessions Per Month", ...TIME_COLUMNS, ...END_TIME_COLUMNS],
+  },
+  roster: {
+    label: "Students Export",
+    required: ["First Name", "Last Name", "Enrollment Status"],
+    allowed: ["First Name", "Last Name", "Student Id", "Enrollment Status", "Enrollment Start Date",
+              "Enrollment End Date", "Last Attendance Date"],
+  },
+};
+
+const LOCAL_SUB = "Drop the two Radius exports. Everything runs in this browser: nothing is uploaded and nothing leaves the machine.";
+const SHARED_SUB = "Signed in to the shared copy: everyone signed in sees the same exports and answers. Only the columns the calculator uses are uploaded.";
+const SIGNIN_SUB = "Sign in to work from the shared copy, or use the calculator on this computer only.";
+
+const shared = {
+  available: false,   // this site has the shared server
+  on: false,          // the page is working from the shared copy (never IndexedDB)
+  signedIn: false,
+  user: null,
+  version: null,      // the answers' ETag and save time, as last seen
+  synced: {},         // student key -> recCanon() of the server's copy, as last seen
+  savedBy: null, savedAt: null,
+  timer: null, retry: null, busy: false, failed: "",
+  exports: { attendance: null, roster: null },
+  loadedAt: { attendance: null, roster: null },
+  newer: null,        // newer shared exports than the ones on screen
+  saves: 0,           // saves started; a poll reply older than the latest save is dropped
+  remote: [],         // students changed by someone else since the report was built
+  remoteBy: [],
+  lastPoll: 0, pollTimer: null,
+  temp: null,         // the temporary password just typed, so it is not asked for twice
+};
+
+class ApiError extends Error {
+  constructor(status, message, data) { super(message); this.status = status; this.data = data || {}; }
+}
+
+/* --- comparing answers ----------------------------------------------------- */
+
+// JSON with object keys sorted, so the same answers always give the same text. The same
+// function is in netlify/lib/core.mjs.
+function canon(v) {
+  if (Array.isArray(v)) return "[" + v.map((x) => canon(x === undefined ? null : x)).join(",") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.keys(v).filter((k) => v[k] !== undefined).sort()
+      .map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+/*
+  One student's answers in exactly the shape this page writes (the fields ovFor() fills
+  in): every field present, every value of the right type, anything else dropped.
+  Everything that arrives from elsewhere (the shared copy, an answers file, this
+  browser's storage) goes through it before the report or the screen sees it, so a
+  bad or hostile record cannot break the report or put markup on the page.
+  Kept identical to cleanRecord() in netlify/lib/core.mjs, which applies it on the site.
+*/
+function cleanRecord(rec) {
+  const r = rec && typeof rec === "object" && !Array.isArray(rec) ? rec : {};
+  const MONTH_KEY = /^\d{4}-\d{2}$/, DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+  const month = (v) => typeof v === "string" && MONTH_KEY.test(v);
+  const day = (v) => typeof v === "string" && DAY_KEY.test(v);
+  const text = (max) => (v) => typeof v === "string" && v.length <= max;
+  const list = (v, max, keep) => (Array.isArray(v) ? v.filter(keep).slice(0, max) : []);
+  const unique = (items) => {
+    const seen = new Set();
+    return items.filter((x) => { const k = canon(x); if (seen.has(k)) return false; seen.add(k); return true; });
+  };
+  const hours = (v, lo, hi) => {
+    const out = {};
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k, x] of Object.entries(v)) if (MONTH_KEY.test(k) && typeof x === "number" && isFinite(x) && x >= lo && x <= hi) out[k] = x;
+    }
+    return out;
+  };
+  return {
+    holds: unique(list(r.holds, 60, (h) => h && month(h.start) && (h.until == null || month(h.until)) && (h.source === undefined || text(40)(h.source)))
+      .map((h) => (h.source === undefined ? { start: h.start, until: h.until || null } : { start: h.start, until: h.until || null, source: h.source }))),
+    holdDates: unique(list(r.holdDates, 60, (h) => h && day(h.from) && day(h.to)).map((h) => ({ from: h.from, to: h.to }))),
+    planHours: hours(r.planHours, 0, 200),
+    hourAdjust: hours(r.hourAdjust, -200, 200),
+    notEnrolled: unique(list(r.notEnrolled, 60, month)),
+    charged: unique(list(r.charged, 60, month)),
+    weekdays: Array.isArray(r.weekdays) ? unique(list(r.weekdays, 7, (d) => Number.isInteger(d) && d >= 0 && d <= 6)) : null,
+    sessionHours: typeof r.sessionHours === "number" && isFinite(r.sessionHours) && r.sessionHours > 0 && r.sessionHours <= 12 ? r.sessionHours : null,
+    planReading: r.planReading === "hours" || r.planReading === "sessions" ? r.planReading : null,
+    note: typeof r.note === "string" ? r.note.slice(0, 2000) : "",
+    answered: unique(list(r.answered, 1000, text(300))),
+    auditChecked: unique(list(r.auditChecked, 1000, text(300))),
+  };
+}
+
+const EMPTY_REC = canon(cleanRecord({}));
+
+// One student's answers as comparable text; undefined when there is nothing in them,
+// so a record made and left empty is the same as no record.
+function recCanon(rec) {
+  if (!rec || typeof rec !== "object") return undefined;
+  const text = canon(cleanRecord(rec));
+  return text === EMPTY_REC ? undefined : text;
+}
+
+// What this browser has changed since it last agreed with the server, and for each
+// student the copy that change was made from (base), so the server can combine it with
+// anything a colleague saved in between instead of overwriting it.
+function answerPatch(students, synced) {
+  const set = {}, remove = [], sent = {}, base = {};
+  for (const key of new Set([...Object.keys(students), ...Object.keys(synced)])) {
+    const mine = recCanon(students[key]);
+    if (mine === synced[key]) continue;
+    if (mine === undefined) remove.push(key);
+    else set[key] = cleanRecord(students[key]);
+    sent[key] = mine;
+    base[key] = synced[key] === undefined ? null : JSON.parse(synced[key]);
+  }
+  return { set, remove, sent, base, empty: !Object.keys(set).length && !remove.length };
+}
+
+// Take the server's copy into `students`, except where this browser has a change the
+// server has not seen yet. Returns the students that changed here because of it.
+function adoptAnswers(students, synced, remote) {
+  const changed = [];
+  for (const key of new Set([...Object.keys(students), ...Object.keys(synced), ...Object.keys(remote)])) {
+    const theirs = recCanon(remote[key]);
+    const mine = recCanon(students[key]);
+    const pending = mine !== synced[key];
+    if (!pending && mine !== theirs) {
+      if (theirs === undefined) delete students[key];
+      else students[key] = cleanRecord(remote[key]);
+      changed.push(key);
+    }
+    if (theirs === undefined) delete synced[key];
+    else synced[key] = theirs;
+  }
+  return changed;
+}
+
+/* --- talking to the site ----------------------------------------------------- */
+
+async function api(method, path, body) {
+  const options = { method, credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" } };
+  if (method !== "GET") options.headers["x-makeup-tracker"] = "1";
+  if (body instanceof Uint8Array) {
+    options.body = body;
+    options.headers["content-type"] = "application/octet-stream";
+  } else if (body !== undefined) {
+    options.body = JSON.stringify(body);
+    options.headers["content-type"] = "application/json";
+  }
+  let res;
+  try { res = await fetch("/api" + path, options); }
+  catch (e) { throw new ApiError(0, "could not reach the site (check the internet connection)"); }
+  const type = res.headers.get("content-type") || "";
+  if (res.ok && !type.includes("json")) return res;
+  let data = null;
+  if (type.includes("json")) { try { data = await res.json(); } catch (e) { data = null; } }
+  if (!res.ok) {
+    const err = new ApiError(res.status, (data && data.error) || "the site answered " + res.status, data);
+    if (res.status === 401 && !["/login", "/setup", "/password"].includes(path)) sessionLost();
+    if (data && data.mustChange) showAuth("mustChange");
+    throw err;
+  }
+  return data;
+}
+
+async function gzipText(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function gunzipText(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Response(stream).text();
+}
+
+// Is this page on the site with the shared server? Never asked when opened from disk.
+async function probeShared() {
+  if (location.protocol !== "https:" && location.protocol !== "http:") return null;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 8000);
+  try {
+    const res = await fetch("/api/session", { credentials: "same-origin", cache: "no-store", signal: stop.signal });
+    if (!res.ok || !(res.headers.get("content-type") || "").includes("json")) return null;
+    const data = await res.json();
+    return data && data.service === "makeup-tracker" ? data : null;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* --- shared answers ---------------------------------------------------------- */
+
+// Which save of the answers this is. The save time is part of it so a change is noticed
+// even where a store hands back no ETag (the Blobs test server does not).
+const answersVersion = (a) => (a && (a.etag || a.savedAt) ? (a.etag || "") + "|" + (a.savedAt || "") : null);
+
+function takeAnswers(res) {
+  const remote = (res.answers && res.answers.students) || {};
+  const changed = adoptAnswers(overrides.students, shared.synced, remote);
+  for (const key of changed) ovFor(key, false);
+  shared.version = answersVersion(res);
+  shared.savedBy = res.savedBy || null;
+  shared.savedAt = res.savedAt || null;
+  if (report && changed.length) {
+    for (const key of changed) if (!shared.remote.includes(key)) shared.remote.push(key);
+    for (const key of changed) {
+      const by = res.meta && res.meta[key] && res.meta[key].by;
+      if (by && !shared.remoteBy.includes(by)) shared.remoteBy.push(by);
+    }
+  }
+  showSync();
+  return changed;
+}
+
+function queueAnswerSync(delay) {
+  if (!shared.on) return;
+  clearTimeout(shared.timer);
+  shared.timer = setTimeout(() => { shared.timer = null; syncAnswers(); }, delay == null ? 400 : delay);
+  showSync();
+}
+
+async function syncAnswers() {
+  if (!shared.on || !shared.signedIn) return;
+  if (shared.busy) { queueAnswerSync(500); return; }
+  const patch = answerPatch(overrides.students, shared.synced);
+  if (patch.empty) { showSync(); return; }
+  shared.busy = true;
+  showSync();
+  try {
+    shared.saves++;
+    const res = await api("PATCH", "/answers", { set: patch.set, remove: patch.remove, base: patch.base });
+    for (const [key, text] of Object.entries(patch.sent)) {
+      if (text === undefined) delete shared.synced[key];
+      else shared.synced[key] = text;
+    }
+    shared.failed = "";
+    clearTimeout(shared.retry);
+    takeAnswers(res);
+  } catch (err) {
+    shared.failed = err.message;
+    clearTimeout(shared.retry);
+    if (err.status !== 401) shared.retry = setTimeout(syncAnswers, 15000);
+  } finally {
+    shared.busy = false;
+    showSync();
+  }
+  if (!shared.failed && !answerPatch(overrides.students, shared.synced).empty) queueAnswerSync(50);
+}
+
+// Save now and report whether everything entered here is on the site.
+async function flushAnswers() {
+  clearTimeout(shared.timer);
+  shared.timer = null;
+  while (shared.busy) await new Promise((r) => setTimeout(r, 100));
+  await syncAnswers();
+  while (shared.busy) await new Promise((r) => setTimeout(r, 100));
+  return !shared.failed && answerPatch(overrides.students, shared.synced).empty;
+}
+
+function unsavedAnswers() {
+  return shared.on && !answerPatch(overrides.students, shared.synced).empty;
+}
+
+/* --- shared exports ---------------------------------------------------------- */
+
+// The export cut down to the columns the calculator reads.
+function sharedCopy(sheet, which) {
+  const spec = SHARED_COLUMNS[which];
+  const headers = spec.allowed.filter((h) => sheet.headers.includes(h));
+  const missing = spec.required.filter((h) => !headers.includes(h));
+  if (missing.length) {
+    throw new Error("this does not look like the " + spec.label + ' (it has no "' + missing[0] + '" column), so it was not shared');
+  }
+  const records = sheet.records.map((r) => {
+    const row = {};
+    for (const h of headers) row[h] = r[h] == null ? "" : String(r[h]);
+    return row;
+  });
+  return { fileName: sheet.fileName, headers, records };
+}
+
+async function shareExport(sheet, which) {
+  const packed = await gzipText(JSON.stringify(sharedCopy(sheet, which)));
+  const res = await api("PUT", "/exports/" + which, packed);
+  shared.exports = res.exports;
+  shared.loadedAt[which] = res.exports[which] && res.exports[which].savedAt;
+  return res.exports[which];
+}
+
+function sharedLabel(which) {
+  const m = shared.exports[which];
+  if (!m) return;
+  const label = el(which === "attendance" ? "nameAtt" : "nameStu");
+  label.textContent = m.fileName + " — " + Number(m.rows).toLocaleString() + " rows (shared by " + m.savedBy + ", " + fmtWhen(m.savedAt) + ")";
+}
+
+async function loadSharedExports(meta) {
+  shared.exports = meta || { attendance: null, roster: null };
+  shared.newer = null;
+  for (const which of ["attendance", "roster"]) {
+    const m = shared.exports[which];
+    if (!m) continue;
+    const res = await api("GET", "/exports/" + which);
+    const data = JSON.parse(await gunzipText(await res.arrayBuffer()));
+    state[which] = { headers: data.headers, records: data.records, serialToDate, fileName: data.fileName || m.fileName, savedAt: m.savedAt };
+    shared.loadedAt[which] = m.savedAt;
+    markLoaded(which, state[which].fileName, data.records.length, null);
+    sharedLabel(which);
+  }
+}
+
+function noteNewerExports(meta) {
+  if (!meta) return;
+  shared.exports = meta;
+  let newer = null;
+  for (const which of ["attendance", "roster"]) {
+    const m = meta[which];
+    if (m && m.savedAt !== shared.loadedAt[which]) newer = { by: m.savedBy, at: m.savedAt };
+  }
+  shared.newer = newer;
+  showSync();
+}
+
+function resetDrops() {
+  for (const [drop, label] of [["dropAtt", "nameAtt"], ["dropStu", "nameStu"]]) {
+    el(drop).classList.remove("loaded");
+    el(label).textContent = "";
+  }
+  el("run").disabled = true;
+}
+
+// The Radius sync replaces both exports twice a day, weekends included, so an export it
+// shared more than a day ago means the sync has stopped and the numbers are going stale.
+const SYNC_NAME = "Radius sync";
+const SYNC_STALE_HOURS = 26;
+function syncStaleSince(meta, nowMs) {
+  const synced = ["attendance", "roster"].map((w) => meta && meta[w]).filter((m) => m && m.savedBy === SYNC_NAME);
+  if (!synced.length) return 0;
+  const oldest = Math.min(...synced.map((m) => m.savedAt || 0));
+  return nowMs - oldest > SYNC_STALE_HOURS * 3600000 ? oldest : 0;
+}
+
+function describeShared() {
+  const note = el("storageNote");
+  const a = shared.exports.attendance, r = shared.exports.roster;
+  if (!a && !r) {
+    note.textContent = "Nobody has shared the exports yet. Drop them here and everyone signed in will work from the same numbers. Only the columns the calculator uses are uploaded.";
+  } else {
+    note.textContent = "Working from the shared exports. Dropping a newer export replaces it for everyone. Only the columns the calculator uses are kept on the site: names, attendance dates and times, durations, plans, and enrollment status and dates.";
+    const stale = syncStaleSince(shared.exports, Date.now());
+    if (stale) {
+      const warn = document.createElement("span");
+      warn.className = "bad-txt";
+      warn.textContent = " The Radius sync last updated the exports " + fmtWhen(stale) +
+        ", more than a day ago, so these numbers may be out of date. Check the Radius sync in GitHub, or drop newer exports here.";
+      note.append(warn);
+    }
+  }
+  el("forget").hidden = !(shared.user && shared.user.admin && (a || r));
+}
+
+/* --- the status line --------------------------------------------------------- */
+
+function fmtWhen(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const today = new Date();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === today.toDateString() ? "today " + time : d.toLocaleDateString() + " " + time;
+}
+
+function showSync() {
+  const box = el("syncNote");
+  if (!shared.on) { box.hidden = true; return; }
+  box.hidden = false;
+  let html;
+  if (shared.failed) {
+    html = '<span class="bad-txt">Answers not saved yet: ' + esc(shared.failed) + ".</span> Trying again; keep this tab open.";
+  } else if (shared.busy || shared.timer) {
+    html = "Saving answers…";
+  } else if (shared.savedAt) {
+    html = "Answers are shared. Last saved by " + esc(shared.savedBy) + " " + esc(fmtWhen(shared.savedAt)) + ".";
+  } else {
+    html = "Answers are shared with everyone signed in.";
+  }
+  if (shared.remote.length) {
+    html += ' <b>' + esc(shared.remoteBy.join(", ") || "Someone") + " changed answers for " + shared.remote.length +
+      " student" + (shared.remote.length === 1 ? "" : "s") + '.</b> <button class="ghost small" id="syncShow">Update the numbers</button>';
+  }
+  if (shared.newer) {
+    html += " <b>Newer exports were shared by " + esc(shared.newer.by) + " " + esc(fmtWhen(shared.newer.at)) +
+      '.</b> <button class="ghost small" id="syncLoad">Load them</button>';
+  }
+  box.innerHTML = html;
+  const show = el("syncShow");
+  if (show) show.onclick = () => rerun();
+  const load = el("syncLoad");
+  if (load) load.onclick = async () => {
+    load.disabled = true;
+    try {
+      await loadSharedExports(shared.exports);
+      if (state.attendance && state.roster) el("run").click();
+    } catch (err) { say("Could not load the shared exports: " + esc(err.message), "error"); }
+    showSync();
+  };
+}
+
+/* --- polling for colleagues' changes ------------------------------------------ */
+
+async function pollShared(soon) {
+  if (!shared.on || !shared.signedIn || document.hidden || shared.busy) return;
+  if (soon && Date.now() - shared.lastPoll < 20000) return;
+  shared.lastPoll = Date.now();
+  let status;
+  try { status = await api("GET", "/status"); } catch (e) { return; }
+  if (answersVersion(status.answers) !== shared.version && !shared.busy) {
+    const saves = shared.saves;
+    let res;
+    try { res = await api("GET", "/answers"); } catch (e) { return; }
+    // A save that started while this was on its way has newer answers than this reply:
+    // taking it would put back what that save replaced. The next poll catches up.
+    if (shared.busy || shared.saves !== saves) return;
+    takeAnswers(res);
+    if (unsavedAnswers()) queueAnswerSync();
+  }
+  noteNewerExports(status.exports);
+}
+
+function startPolling() {
+  clearInterval(shared.pollTimer);
+  shared.pollTimer = setInterval(() => pollShared(false), 120000);
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollShared(true); });
+window.addEventListener("focus", () => pollShared(true));
+window.addEventListener("beforeunload", (e) => {
+  if (unsavedAnswers()) { e.preventDefault(); e.returnValue = ""; }
+});
+
+/* --- signing in ---------------------------------------------------------------- */
+
+let authMode = null;
+
+const AUTH_TEXT = {
+  login: ["Sign in", "Sign in to the shared makeup calculator. Ask an admin for an account."],
+  setup: ["Set up the shared calculator", "No accounts exist yet. Enter the setup code (the SETUP_CODE environment variable in Netlify) and choose the first username and password. This account is an admin and can add everyone else."],
+  setupOff: ["Setup is turned off", "No accounts exist yet. To make the first one, add an environment variable called SETUP_CODE (8 or more characters) in Netlify under Site configuration → Environment variables, redeploy, and reload this page."],
+  mustChange: ["Choose your own password", "You signed in with a temporary password. Choose your own to carry on; nobody else will know it."],
+  change: ["Change your password", "Your other computers will be signed out."],
+};
+
+function showAuth(mode, message) {
+  authMode = mode;
+  const [title, intro] = AUTH_TEXT[mode];
+  el("authTitle").textContent = title;
+  el("authIntro").textContent = message || intro;
+  const fields = {
+    login: { username: "Username", current: "Password" },
+    setup: { code: "Setup code", username: "Username", next: "Password", confirm: "Password again" },
+    setupOff: {},
+    mustChange: Object.assign(shared.temp ? {} : { current: "Temporary password" }, { next: "New password", confirm: "New password again" }),
+    change: { current: "Current password", next: "New password", confirm: "New password again" },
+  }[mode];
+  el("authForm").querySelectorAll("label[data-f]").forEach((label) => {
+    const name = label.dataset.f;
+    const input = label.querySelector("input");
+    label.hidden = !(name in fields);
+    input.required = name in fields;
+    if (name in fields) label.querySelector("span").textContent = fields[name];
+    if (input.type === "password" || name === "code") input.value = "";
+  });
+  el("authGo").hidden = mode === "setupOff";
+  el("authGo").textContent = mode === "login" ? "Sign in" : mode === "setup" ? "Create the admin account" : "Save the new password";
+  el("authCancel").hidden = mode !== "change";
+  el("authLocal").hidden = shared.on || !["login", "setup", "setupOff"].includes(mode);
+  el("authErr").textContent = "";
+  const blocking = mode !== "change";
+  if (blocking) {
+    el("intakePanel").hidden = true;
+    el("results").hidden = true;
+    el("accountsPanel").hidden = true;
+  }
+  el("authPanel").hidden = false;
+  setMode();
+  const first = [...el("authForm").querySelectorAll("label:not([hidden]) input")].find((i) => !i.value);
+  if (first) first.focus();
+}
+
+function hideAuth() {
+  authMode = null;
+  setMode();
+  el("authPanel").hidden = true;
+  el("intakePanel").hidden = false;
+  if (report) el("results").hidden = false;
+}
+
+function setMode() {
+  const on = shared.on && shared.signedIn;
+  el("whoBar").hidden = !on;
+  el("signInBar").hidden = !(shared.available && !shared.on && authMode === null);
+  if (on) {
+    el("whoName").textContent = shared.user.name;
+    el("openAccounts").hidden = !shared.user.admin;
+  }
+  el("headerSub").textContent = shared.on ? SHARED_SUB : authMode ? SIGNIN_SUB : LOCAL_SUB;
+  el("clearAnswers").hidden = shared.on && !(shared.user && shared.user.admin);
+  el("forget").textContent = shared.on ? "Remove the shared exports" : "Forget stored data";
+}
+
+function sessionLost() {
+  if (!shared.on) return;
+  shared.signedIn = false;
+  clearInterval(shared.pollTimer);
+  showAuth("login", "You have been signed out: sign-ins last 12 hours, and an admin resetting or removing an account ends it. Sign in again to carry on; anything not yet saved is kept and saved once you are back.");
+}
+
+// Signed in: load the shared copy. `resume` keeps answers entered here that the server
+// has not seen yet (signed out mid-session and back in).
+async function enterShared(user) {
+  const resume = shared.on;
+  shared.user = user;
+  shared.available = true;
+  if (user.mustChange) { showAuth("mustChange"); return; }
+  shared.on = true;
+  shared.signedIn = true;
+  hideAuth();
+  setMode();
+  if (!resume) {
+    overrides = { version: 1, students: {} };
+    shared.synced = {};
+    shared.version = null;
+    state.attendance = null;
+    state.roster = null;
+    report = null;
+    resetDrops();
+    el("results").hidden = true;
+    clearMessages();
+    el("log").textContent = "";
+  }
+  shared.remote = [];
+  shared.remoteBy = [];
+  el("stamp").className = "stamp";
+  el("stamp").textContent = "Loading the shared copy…";
+  try {
+    takeAnswers(await api("GET", "/answers"));
+    const list = await api("GET", "/exports");
+    if (!resume || !state.attendance || !state.roster) await loadSharedExports(list.exports);
+    else noteNewerExports(list.exports);
+  } catch (err) {
+    if (err.status !== 401) say("Could not load the shared copy: " + esc(err.message), "error");
+    el("stamp").textContent = "No data loaded";
+    return;
+  }
+  describeShared();
+  startPolling();
+  if (unsavedAnswers()) queueAnswerSync(0);
+  showSync();
+  if (!resume) offerLocalCopy();
+  if (state.attendance && state.roster) {
+    if (!resume || !report) el("run").click();
+    else el("stamp").className = "stamp live";
+  } else {
+    el("stamp").textContent = "No data loaded";
+  }
+}
+
+/* --- answers and exports this computer saved before sharing ---------------------- */
+
+async function offerLocalCopy() {
+  const box = el("sharedOffer");
+  box.hidden = true;
+  let ov, att, ros;
+  try { [ov, att, ros] = await Promise.all([dbGet("overrides"), dbGet("attendance"), dbGet("roster")]); }
+  catch (e) { return; }
+  const students = ov && ov.students ? Object.keys(ov.students).filter((k) => recCanon(ov.students[k]) !== undefined) : [];
+  const hasExports = !!(att && att.bytes && ros && ros.bytes);
+  if (!students.length && !(att || ros)) return;
+  const shareExports = hasExports && !shared.exports.attendance && !shared.exports.roster;
+  const parts = [];
+  if (students.length) parts.push("answers for " + students.length + " student" + (students.length === 1 ? "" : "s"));
+  if (att || ros) parts.push("exports saved " + new Date(Math.max((att && att.savedAt) || 0, (ros && ros.savedAt) || 0)).toLocaleDateString());
+  box.innerHTML = "<b>This computer has its own saved copy from before sharing:</b> " + esc(parts.join(" and ")) + ". " +
+    (students.length || shareExports ? '<button class="small" id="offerAdd">Add it to the shared copy</button> ' : "") +
+    '<button class="ghost small" id="offerErase">Erase it from this computer</button>' +
+    '<div class="sub" style="margin-top:6px">Adding merges these answers into everyone\'s without replacing any answer already shared' +
+    (shareExports ? ", shares the exports (none are shared yet)" : "") +
+    ", then erases this computer's copy.</div>";
+  box.hidden = false;
+
+  const add = el("offerAdd");
+  if (add) add.onclick = async () => {
+    add.disabled = true;
+    try {
+      if (students.length) mergeAnswers(ov, true);
+      if (shareExports) {
+        for (const [which, saved] of [["attendance", att], ["roster", ros]]) {
+          const sheet = await readSheet(saved.bytes);
+          sheet.fileName = saved.name;
+          await shareExport(sheet, which);
+        }
+        await loadSharedExports(shared.exports);
+        describeShared();
+      }
+      if (!(await flushAnswers())) throw new Error(shared.failed || "the answers did not save");
+      await dbClear();
+      box.hidden = true;
+      if (state.attendance && state.roster) el("run").click();
+      say("Added this computer's saved copy to the shared copy and erased it from this computer.");
+    } catch (err) {
+      add.disabled = false;
+      say("Could not add this computer's copy: " + esc(err.message) + ". Nothing was erased.", "error");
+    }
+  };
+  el("offerErase").onclick = async () => {
+    if (!confirm("Erase the exports and answers saved on this computer? The shared copy is not affected.")) return;
+    try { await dbClear(); } catch (e) { /* nothing stored */ }
+    box.hidden = true;
+  };
+}
+
+/* --- accounts (admins) ------------------------------------------------------------ */
+
+// Twelve letters and digits in threes, no look-alikes (0/o, 1/l/i).
+function suggestPassword() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  const out = [];
+  while (out.length < 12) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    for (const b of bytes) if (b < 248 && out.length < 12) out.push(alphabet[b % 31]);
+  }
+  return out.join("").replace(/(.{4})(?=.)/g, "$1-");
+}
+
+function accountsMessage(html, kind) {
+  el("accountsMsg").innerHTML = html ? '<div class="notice' + (kind === "error" ? " err" : "") + '">' + html + "</div>" : "";
+}
+
+function renderAccounts(users) {
+  const me = shared.user.name;
+  el("accountsTable").innerHTML = "<tr><th>Username</th><th>Role</th><th>Password</th><th></th></tr>" + users.map((u) =>
+    "<tr><td><b>" + esc(u.name) + "</b>" + (u.name === me ? " (you)" : "") + "</td>" +
+    "<td>" + (u.admin ? "Admin" : "Staff") + "</td>" +
+    "<td>" + (u.mustChange ? '<span class="pill warn">temporary</span>' : '<span class="pill ok">their own</span>') + "</td>" +
+    '<td class="num">' + (u.name === me ? "" :
+      '<button class="ghost small" data-areset="' + esc(u.name) + '">Reset password</button> ' +
+      '<button class="ghost small" data-aadmin="' + esc(u.name) + '" data-to="' + (u.admin ? "0" : "1") + '">' + (u.admin ? "Remove admin" : "Make admin") + "</button> " +
+      '<button class="ghost small" data-aremove="' + esc(u.name) + '">Remove</button>') + "</td></tr>"
+  ).join("");
+  const act = async (fn) => {
+    try { renderAccounts((await fn()).users); } catch (err) { accountsMessage(esc(err.message), "error"); }
+  };
+  el("accountsTable").querySelectorAll("button[data-areset]").forEach((b) => {
+    b.onclick = () => {
+      const name = b.dataset.areset, temp = suggestPassword();
+      if (!confirm("Reset " + name + "'s password?\n\nTheir temporary password will be:  " + temp +
+                   "\n\nThey are signed out everywhere and choose their own password the next time they sign in.")) return;
+      act(async () => {
+        const res = await api("POST", "/users/" + encodeURIComponent(name) + "/reset", { password: temp });
+        accountsMessage("Reset. Give <b>" + esc(name) + "</b> this temporary password: <code>" + esc(temp) + "</code>");
+        return res;
+      });
+    };
+  });
+  el("accountsTable").querySelectorAll("button[data-aadmin]").forEach((b) => {
+    b.onclick = () => act(() => api("POST", "/users/" + encodeURIComponent(b.dataset.aadmin) + "/admin", { admin: b.dataset.to === "1" }));
+  });
+  el("accountsTable").querySelectorAll("button[data-aremove]").forEach((b) => {
+    b.onclick = () => {
+      const name = b.dataset.aremove;
+      if (!confirm("Remove " + name + "'s account? They are signed out straight away. Their saved answers stay.")) return;
+      act(async () => { const res = await api("DELETE", "/users/" + encodeURIComponent(name)); accountsMessage("Removed " + esc(name) + "."); return res; });
+    };
+  });
+}
+
+// The site keeps a copy of the answers from the first save of each day, and one before
+// any save that clears many students, for 30 days. Downloaded, one goes back in with
+// "Load answers", which merges it into the answers as they are now.
+async function renderBackups() {
+  const box = el("backupsBox");
+  let list;
+  try { list = (await api("GET", "/backups")).backups; }
+  catch (err) { box.innerHTML = ""; return; }
+  if (!list.length) {
+    box.innerHTML = '<div class="sub">Answer backups: none yet. The site keeps a copy of the answers each day, starting with the first save.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="sub"><b>Answer backups</b> (kept 30 days). To put one back, download it and use <b>Load answers</b>; ' +
+    "it is merged into the answers as they are now.</div>" +
+    '<div class="row" style="margin-top:6px">' + list.slice(0, 12).map((b, i) =>
+      '<button class="ghost small" data-backup="' + i + '">' + esc(fmtWhen(b.savedAt)) +
+      (b.reason === "clear" ? " (before a clear)" : "") + " · " + esc(b.students) + " students</button>").join("") + "</div>";
+  box.querySelectorAll("button[data-backup]").forEach((b) => {
+    b.onclick = async () => {
+      const item = list[+b.dataset.backup];
+      try {
+        const doc = await api("GET", "/backups/" + encodeURIComponent(item.name));
+        const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "makeup-answers-backup-" + item.name + ".json";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      } catch (err) { accountsMessage(esc(err.message), "error"); }
+    };
+  });
+}
+
+async function openAccounts() {
+  el("accountsPanel").hidden = false;
+  accountsMessage("");
+  el("newPass").value = suggestPassword();
+  try { renderAccounts((await api("GET", "/users")).users); }
+  catch (err) { accountsMessage(esc(err.message), "error"); }
+  renderBackups();
+  el("accountsPanel").scrollIntoView({ block: "start" });
+}
+
+el("openAccounts").addEventListener("click", openAccounts);
+el("closeAccounts").addEventListener("click", () => { el("accountsPanel").hidden = true; });
+el("newPassSuggest").addEventListener("click", () => { el("newPass").value = suggestPassword(); });
+
+el("addUserForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = el("newUser").value.trim(), password = el("newPass").value;
+  try {
+    const res = await api("POST", "/users", { username: name, password, admin: el("newAdmin").checked });
+    renderAccounts(res.users);
+    accountsMessage("Added <b>" + esc(name.toLowerCase()) + "</b>. Give them their username and this temporary password: <code>" +
+                    esc(password) + "</code>. They choose their own the first time they sign in.");
+    el("newUser").value = "";
+    el("newAdmin").checked = false;
+    el("newPass").value = suggestPassword();
+  } catch (err) {
+    accountsMessage(esc(err.message), "error");
+  }
+});
+
+/* --- the sign-in form and header buttons ------------------------------------------- */
+
+el("authForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const v = (id) => el(id).value;
+  const mode = authMode;
+  el("authErr").textContent = "";
+  if (["setup", "mustChange", "change"].includes(mode) && v("fNext") !== v("fConfirm")) {
+    el("authErr").textContent = "The two new passwords do not match.";
+    return;
+  }
+  el("authGo").disabled = true;
+  try {
+    if (mode === "login") {
+      const res = await api("POST", "/login", { username: v("fUser"), password: v("fCurrent") });
+      shared.temp = res.user.mustChange ? v("fCurrent") : null;
+      await enterShared(res.user);
+    } else if (mode === "setup") {
+      const res = await api("POST", "/setup", { code: v("fCode"), username: v("fUser"), password: v("fNext") });
+      await enterShared(res.user);
+    } else if (mode === "mustChange" || mode === "change") {
+      const current = mode === "mustChange" && shared.temp ? shared.temp : v("fCurrent");
+      const res = await api("POST", "/password", { current, next: v("fNext") });
+      shared.temp = null;
+      if (mode === "mustChange") await enterShared(res.user);
+      else { hideAuth(); say("Password changed. Any other computer signed in as you has been signed out."); }
+    }
+  } catch (err) {
+    el("authErr").textContent = err.message;
+    // A temporary password that stopped working (reset again, say) has to be typed.
+    if (mode === "mustChange" && err.status === 401 && shared.temp) { shared.temp = null; showAuth("mustChange", err.message); }
+  } finally {
+    el("authGo").disabled = false;
+  }
+});
+
+el("authCancel").addEventListener("click", () => hideAuth());
+el("openPassword").addEventListener("click", () => showAuth("change"));
+
+el("signOut").addEventListener("click", async () => {
+  if (unsavedAnswers() && !(await flushAnswers()) &&
+      !confirm("Some answers have not been saved to the site yet. Sign out anyway and lose them?")) return;
+  try { await api("POST", "/logout"); } catch (e) { /* signed out either way */ }
+  // Reloading drops every student's data from this tab's memory.
+  location.reload();
+});
+
+el("useLocal").addEventListener("click", () => {
+  hideAuth();
+  setMode();
+  restoreSaved();
+});
+
+el("signIn").addEventListener("click", () => {
+  if (state.attendance || Object.keys(overrides.students).length) {
+    if (!confirm("Sign in to the shared copy? This computer's own exports and answers stay saved here, and you will be offered the chance to add them to the shared copy.")) return;
+  }
+  showAuth("login");
+});
+
+async function boot() {
+  const session = await probeShared();
+  if (!session) { setMode(); restoreSaved(); return; }
+  shared.available = true;
+  if (session.signedIn) { await enterShared(session.user); return; }
+  showAuth(session.setupNeeded ? (session.setupAllowed ? "setup" : "setupOff") : "login");
+}
 
 /* ---------------------------------------------------------------------------
    Self-check.
@@ -2464,11 +3469,15 @@ function selfCheck() {
   // --- name key: the join between the two exports ------------------------------------
   is("nameKey collapses case and space", nameKey(" De  La Cruz ", "SOTO"), nameKey("de la cruz", "soto"));
 
-  // --- payable window: two months back, clipped to the export start -------------------
-  const w1 = payableWindow(D(2026, 7, 1).n, D(2026, 8, 17).n);
-  is("window clips to export start", [fromDayNumber(w1.fromN).m, fromDayNumber(w1.fromN).d], [7, 1]);
-  const w2 = payableWindow(D(2026, 7, 1).n, D(2026, 9, 29).n);
-  is("window is two months back", [fromDayNumber(w2.fromN).m, fromDayNumber(w2.fromN).d], [7, 29]);
+  // --- the judged window: whole months, two back from today ----------------------------
+  const w1 = judgedWindow(D(2026, 10, 25).n, D(2026, 8, 1).n, D(2026, 10, 24).n);
+  is("on 25 Oct, August through October is judged", [fromDayNumber(w1.startN).m, fromDayNumber(w1.startN).d], [8, 1]);
+  const w2 = judgedWindow(D(2026, 11, 1).n, D(2026, 8, 1).n, D(2026, 10, 31).n);
+  is("on 1 Nov, August drops off", [fromDayNumber(w2.startN).m, fromDayNumber(w2.startN).d], [9, 1]);
+  const w3 = judgedWindow(D(2026, 8, 20).n, D(2026, 7, 1).n, D(2026, 8, 19).n);
+  is("a short export is all window", [fromDayNumber(w3.fromN).m, fromDayNumber(w3.fromN).d], [7, 1]);
+  const w4 = judgedWindow(D(2027, 1, 10).n, D(2026, 8, 1).n, D(2027, 1, 9).n);
+  is("the window crosses the year", [fromDayNumber(w4.startN).y, fromDayNumber(w4.startN).m], [2026, 11]);
 
   // --- holds: whole months, and the close-on-enrolled lifecycle ----------------------
   const openHold = { start: "2026-08", until: null };
@@ -2480,28 +3489,20 @@ function selfCheck() {
   is("closed hold covers Sep", holdCovers(closed, "2026-09"), true);
   is("closed hold stops at Oct", holdCovers(closed, "2026-10"), false);
 
-  // --- FIFO settlement inside a two-month grace --------------------------------------
+  // --- what is owed: each month stands alone ------------------------------------------
   const M = (y, m, required, attended, extra) =>
     Object.assign({ y, m, required, attended, onHold: false, isCurrent: false,
                     label: MONTHS[m - 1] + " " + y }, extra || {});
-  is("later excess pays an earlier shortfall", settle([M(2026, 5, 8, 6), M(2026, 6, 8, 10)]).owed, 0);
-  const fifo = settle([M(2026, 4, 8, 5), M(2026, 5, 8, 6), M(2026, 6, 8, 12)]);
-  is("oldest debt is paid first", fifo.payments.map((p) => [p.to, p.hours]), [["Apr 2026", 3], ["May 2026", 1]]);
-  is("FIFO leaves the newer debt", fifo.owed, 1);
-  const expiry = settle([M(2026, 4, 8, 4), M(2026, 5, 8, 8), M(2026, 6, 8, 8), M(2026, 7, 8, 16)]);
-  is("debt expires after two months", expiry.expired, 4);
-  is("expired debt cannot be paid late", expiry.payments, []);
-  is("payable on the last month of grace", settle([M(2026, 4, 8, 4), M(2026, 6, 8, 12)]).owed, 0);
-  const bank = settle([M(2026, 5, 8, 12), M(2026, 6, 8, 4)]);
-  is("excess does not bank forward", [bank.owed, bank.unused], [4, 4]);
-  is("current month opens no debt", settle([M(2026, 8, 8, 2, { isCurrent: true })]).owed, 0);
-  is("hours already sat this month pay old debt at once",
-     settle([M(2026, 7, 8, 4), M(2026, 8, 8, 12, { isCurrent: true })]).owed, 0);
-  is("this month's own requirement is not paid from thin air",
-     settle([M(2026, 7, 8, 4), M(2026, 8, 8, 6, { isCurrent: true })]).owed, 4);
+  is("a short month owes its own shortfall", settle([M(2026, 8, 8, 6)]).owed, 2);
+  is("a full month owes nothing", settle([M(2026, 8, 8, 8)]).owed, 0);
+  is("extra hours later do not pay an earlier month",
+     settle([M(2026, 8, 8, 6), M(2026, 9, 8, 10)]).owed, 2);
+  is("each short month counts", settle([M(2026, 8, 8, 5), M(2026, 9, 8, 6)]).debts.map((d) => [d.label, d.hours]),
+     [["Aug 2026", 3], ["Sep 2026", 2]]);
+  is("current month opens no debt", settle([M(2026, 10, 8, 2, { isCurrent: true })]).owed, 0);
+  is("this month's hours do not pay an earlier month",
+     settle([M(2026, 9, 8, 4), M(2026, 10, 8, 12, { isCurrent: true })]).owed, 4);
   is("held month opens no debt", settle([M(2026, 8, 8, 0, { onHold: true })]).debts.length, 0);
-  is("attendance while held pays earlier debt",
-     settle([M(2026, 7, 8, 6), M(2026, 8, 0, 2, { onHold: true })]).owed, 0);
 
   // --- whole-month absence: evidence, never current roster status --------------------
   const rec = (o) => Object.assign({ start: null, end: null, lastAttendance: null, onHold: false }, o);
@@ -2576,23 +3577,60 @@ function selfCheck() {
   is("marker hours count toward the month", withMarker.attended, 9);
   is("marker hours are remembered separately", withMarker.markerHours, 1);
 
+  // --- session windows: outside them is a makeup ----------------------------------------
+  // 3-9 Aug 2026 runs Monday to Sunday.
+  is("Wed 11 AM is a makeup", isMakeupTime(D(2026, 8, 5).n, 11 * 60), true);
+  is("Wed 2:00 PM is a session", isMakeupTime(D(2026, 8, 5).n, 14 * 60), false);
+  is("Mon 2:30 PM is a makeup (window opens 2:45)", isMakeupTime(D(2026, 8, 3).n, 14 * 60 + 30), true);
+  is("Mon 3:00 PM is a session", isMakeupTime(D(2026, 8, 3).n, 15 * 60), false);
+  is("Mon 7:30 PM is a makeup (window closes 7:15)", isMakeupTime(D(2026, 8, 3).n, 19 * 60 + 30), true);
+  is("Sat 10 AM is a session", isMakeupTime(D(2026, 8, 8).n, 10 * 60), false);
+  is("Sat 2 PM is a makeup", isMakeupTime(D(2026, 8, 8).n, 14 * 60), true);
+  is("Sunday is always a makeup", isMakeupTime(D(2026, 8, 9).n, 15 * 60), true);
+  is("12 AM is a makeup", isMakeupTime(D(2026, 8, 4).n, 0), true);
+  is("Mon 6:30-7:30 PM ends after 7:15: a makeup", isMakeupTime(D(2026, 8, 3).n, 18 * 60 + 30, 19 * 60 + 30), true);
+  is("Mon 6:15-7:15 PM is a session", isMakeupTime(D(2026, 8, 3).n, 18 * 60 + 15, 19 * 60 + 15), false);
+  is("Sat 12:30-1:30 PM ends after 1:15: a makeup", isMakeupTime(D(2026, 8, 8).n, 12 * 60 + 30, 13 * 60 + 30), true);
+  is("the end time comes from Departure Time", endMinutesFor({ "Departure Time": "7:30 PM", "Duration (Minutes)": "60" }, 18 * 60), 19 * 60 + 30);
+  is("without one, start plus the minutes logged", endMinutesFor({ "Duration (Minutes)": "117" }, 11 * 60 + 3), 13 * 60);
+  is("no start time is not a makeup", isMakeupTime(D(2026, 8, 4).n, null), false);
+
   // --- plan reading: hours vs sessions ------------------------------------------------
+  // Jun-Aug 2026 with the same plan every month, today in August.
+  const rp = (raw, list, pinned) => {
+    const sp = [[2026, 6], [2026, 7], [2026, 8]];
+    return resolvePlan(sp.map(() => raw), sp, list, 2026, 8, pinned || null);
+  };
   const twoHourFull = [];
   for (let mm = 6; mm <= 7; mm++) for (let w = 0; w < 4; w++) twoHourFull.push(visit(2026, mm, 3 + w * 7, 2, 4));
   is("4/month at 2 hr sessions delivering 8 -> sessions",
-     [resolvePlan(4, twoHourFull, 2026, 8, null).hours, resolvePlan(4, twoHourFull, 2026, 8, null).reading], [8, "sessions"]);
+     [rp(4, twoHourFull).hours, rp(4, twoHourFull).reading], [8, "sessions"]);
   const eightPlanTwoHour = twoHourFull.map((v) => Object.assign({}, v, { spm: 8 }));
   is("8/month at 2 hr sessions delivering 8 -> hours",
-     [resolvePlan(8, eightPlanTwoHour, 2026, 8, null).hours, resolvePlan(8, eightPlanTwoHour, 2026, 8, null).reading], [8, "hours"]);
+     [rp(8, eightPlanTwoHour).hours, rp(8, eightPlanTwoHour).reading], [8, "hours"]);
   const oneHour = [];
   for (let w = 0; w < 4; w++) oneHour.push(visit(2026, 7, 6 + w * 7, 1, 8));
-  is("1 hr sessions are never ambiguous", resolvePlan(8, oneHour, 2026, 8, null).certain, true);
+  is("1 hr sessions are never ambiguous", rp(8, oneHour).certain, true);
   const thin = [visit(2026, 7, 7, 2, 4)];
-  is("one month of history is uncertain and defaults to hours",
-     [resolvePlan(4, thin, 2026, 8, null).hours, resolvePlan(4, thin, 2026, 8, null).certain], [4, false]);
-  is("a pinned answer wins", resolvePlan(4, thin, 2026, 8, "sessions").hours, 8);
+  is("one visit is too little to tell, and defaults to hours",
+     [rp(4, thin).hours, rp(4, thin).certain], [4, false]);
+  is("a pinned answer wins", rp(4, thin, "sessions").hours, 8);
   const markedOnly = twoHourFull.concat([Object.assign(visit(2026, 6, 20, 4, 4), { marker: true })]);
-  is("markers stay out of the plan evidence", resolvePlan(4, markedOnly, 2026, 8, null).hours, 8);
+  is("markers stay out of the plan evidence", rp(4, markedOnly).hours, 8);
+  // One completed month, but a steady weekly pattern: decided from that.
+  const sepOct = [[2026, 9], [2026, 10]];
+  const weeklyTwoHour = [visit(2026, 9, 16, 2, 8), visit(2026, 9, 23, 2, 8), visit(2026, 10, 7, 2, 8), visit(2026, 10, 14, 2, 8)];
+  const fromWeeks = resolvePlan([8, 8], sepOct, weeklyTwoHour, 2026, 10, null);
+  is("8/month, one 2-hr session a week: hours, from the weekly pattern",
+     [fromWeeks.hours, fromWeeks.certain, fromWeeks.source], [8, true, "weekly"]);
+  const fourPlan = weeklyTwoHour.map((v) => Object.assign({}, v, { spm: 4 }));
+  const fromWeeks4 = resolvePlan([4, 4], sepOct, fourPlan, 2026, 10, null);
+  is("4/month, one 2-hr session a week: sessions = 8 hrs, from the weekly pattern",
+     [fromWeeks4.hours, fromWeeks4.reading], [8, "sessions"]);
+  // The plan each month is that month's own.
+  const changing = [visit(2026, 7, 6, 1, 8), visit(2026, 9, 7, 1, 12)];
+  is("each month keeps its own plan; a month with none keeps the one before",
+     monthlyPlans(changing, [[2026, 6], [2026, 7], [2026, 8], [2026, 9]]), { plans: [8, 8, 8, 12], own: [0, 8, 0, 12] });
 
   // --- the attendance audit ------------------------------------------------------------
   const av = (y, mth, d, hours, start, marker) =>
@@ -2608,13 +3646,66 @@ function selfCheck() {
     av(2026, 8, 7, 1, 15 * 60),
     av(2026, 8, 25, 1, 15 * 60),         // future (today is the 19th)
   ];
-  is("audit finds exactly the odd ones",
-     auditVisits(oddball, 1, D(2026, 8, 19).n).map((e) => e.kind).sort(),
-     ["duplicate", "folded", "future", "off-hours", "off-hours"]);
-  is("a heavy month with no markers is flagged", auditMonth("t", "July 2026", 8, 12, 0, false).kind, "heavy-month");
-  is("markers explain a heavy month", auditMonth("t", "July 2026", 8, 12, 4, false), null);
-  is("a merely busy month is not flagged", auditMonth("t", "July 2026", 8, 10, 0, false), null);
-  is("held months are never heavy", auditMonth("t", "July 2026", 0, 12, 0, true), null);
+  is("audit lists only duplicates and future dates",
+     auditVisits(oddball, D(2026, 8, 19).n).map((e) => e.kind).sort(),
+     ["duplicate", "future"]);
+
+  // --- a small report, end to end ------------------------------------------------------
+  // Made-up students, today 20 Oct 2026: one coming 12 hrs a month on an 8 plan, one whose
+  // plan changed in Radius, one with an empty August and an 11 AM makeup, and two pairs of
+  // roster records sharing a name.
+  const rowsA = [], rowsR = [];
+  const row = (first, last, y, mth, d, mins, spm, time) => rowsA.push({ "Attendance Date": mth + "/" + d + "/" + y + " " + (time || "3:30 PM"),
+    "First Name": first, "Last Name": last, "Duration (Minutes)": String(mins), "Sessions Per Month": String(spm) });
+  const person = (first, last, status) => rowsR.push({ "First Name": first, "Last Name": last, "Enrollment Status": status,
+    "Student Id": first + last + status, "Enrollment Start Date": "6/1/2026", "Enrollment End Date": "", "Last Attendance Date": "" });
+  for (const mth of [7, 8, 9, 10]) {
+    let n = 0;
+    for (let d = 1; d <= 28 && n < 12; d++) {
+      const wd = weekdayOf(D(2026, mth, d).n);
+      if (wd > 2 || (mth === 10 && d > 19)) continue;
+      row("Selfcheck", "Busy", 2026, mth, d, 60, 8);
+      row("Selfcheck", "Changed", 2026, mth, d, 60, mth >= 9 ? 12 : 8);
+      if (mth !== 8) row("Selfcheck", "Gap", 2026, mth, d, 60, 8);
+      n++;
+    }
+  }
+  row("Selfcheck", "Gap", 2026, 9, 2, 60, 8, "11:00 AM");
+  // Short in July only (before the window), and short in September with a heavy October.
+  for (const [mth, days] of [[7, [1, 2]], [8, [3, 4, 5, 6, 10, 11, 12, 13]], [9, [1, 2, 3, 8, 9, 10, 14, 15]], [10, [1, 5, 6, 7, 8, 12, 13]]]) {
+    for (const d of days) row("Selfcheck", "July", 2026, mth, d, 60, 8);
+  }
+  for (const [mth, days] of [[8, [3, 4, 5, 6, 10, 11, 12, 13]], [9, [1, 2, 3, 8]], [10, [1, 5, 6, 7, 8, 12, 13, 14, 15, 19]]]) {
+    for (const d of days) row("Selfcheck", "Sept", 2026, mth, d, 60, 8);
+  }
+  person("Selfcheck", "Busy", "Enrolled");
+  person("Selfcheck", "Changed", "Enrolled");
+  person("Selfcheck", "Gap", "Enrolled");
+  person("Selfcheck", "Gap", "Inactive");
+  person("Selfcheck", "Twin", "Enrolled");
+  person("Selfcheck", "Twin", "Enrolled");
+  person("Selfcheck", "July", "Enrolled");
+  person("Selfcheck", "Sept", "Enrolled");
+  const savedOverrides = overrides;
+  overrides = { version: 1, students: {} };
+  let mini;
+  try { mini = buildReport({ records: rowsA }, { records: rowsR }, D(2026, 10, 20).n); }
+  finally { overrides = savedOverrides; }
+  const kid = (last) => mini.students.find((x) => x.key === nameKey("Selfcheck", last));
+  is("12 hrs a month on an 8 plan for 3 months: noted as likely 12",
+     kid("Busy").notes.some((t) => /Likely on a 12\/month plan/.test(t)), true);
+  is("a plan change in Radius is noted as such",
+     kid("Changed").notes.some((t) => /Plan changed in Radius from 8 to 12\/month in September 2026/.test(t)), true);
+  is("only August-October are judged on 20 Oct", kid("Busy").months.map((mo) => mo.shortLabel), ["Aug 2026", "Sep 2026", "Oct 2026"]);
+  is("the changed plan counts from its month on", kid("Changed").months.slice(0, 2).map((mo) => mo.required), [8, 12]);
+  is("an empty month is taken as a hold, not asked about",
+     [kid("Gap").months[0].assumedHold, buildQuestions(mini).filter((q) => q.key === nameKey("Selfcheck", "Gap") && /absent|hold/.test(q.id)).length],
+     [true, 0]);
+  is("an 11 AM visit is counted as a makeup", kid("Gap").months[1].markerHours, 1);
+  is("a short July is outside the window and owes nothing", kid("July").owed, 0);
+  is("a short September is owed, whatever October brings", kid("Sept").owed, 4);
+  is("an old record under the same name is not a clash", kid("Gap").flags.some((f) => /two Enrolled/.test(f)), false);
+  is("two Enrolled records under one name are", mini.warnings.some((w) => /^1 name\(s\) belong to more than one Enrolled/.test(w)), true);
 
   // --- exact hold dates -----------------------------------------------------------------
   is("month-aligned dates become a month hold",
@@ -2664,6 +3755,32 @@ function selfCheck() {
   const emptyWeek = buildMonth(2026, 8, [visit(2026, 8, 11, 1), visit(2026, 8, 13, 1)], tueThu, 8, null,
                                D(2026, 8, 17).n, D(2026, 8, 16).n, null, [], 0, false);
   is("a week with no attendance keeps its missed days", emptyWeek.missed.length, 2);
+
+  // --- shared answers: what is sent, and what is taken from colleagues ------------------
+  is("an empty record counts as no answers", recCanon(cleanRecord({})), undefined);
+  is("markup in an answer record is dropped", cleanRecord({ planHours: { "2026-08": "<img src=x>" }, sessionHours: "<b>" }).planHours, {});
+  is("a record missing its lists still has them", cleanRecord({ note: "x" }).holds, []);
+  is("field order is not a change", recCanon({ note: "x", weekdays: [1] }) === recCanon({ weekdays: [1], note: "x" }), true);
+  const heldRec = { holds: [{ start: "2026-09", until: null, source: "entered" }] };
+  const agreed = { a: recCanon(heldRec) };
+  const sendB = answerPatch({ a: JSON.parse(JSON.stringify(heldRec)), b: { weekdays: [2] } }, agreed);
+  is("only the changed student is sent", [Object.keys(sendB.set), sendB.remove], [["b"], []]);
+  is("a cleared student is sent as removed", answerPatch({}, agreed).remove, ["a"]);
+  const here = { a: { note: "typed here, not saved yet" } };
+  const lastSeen = { a: recCanon({ note: "old" }) };
+  const taken = adoptAnswers(here, lastSeen, { a: { note: "a colleague's" }, c: { weekdays: [4] } });
+  is("an unsaved answer here survives a colleague's", [here.a.note, taken], ["typed here, not saved yet", ["c"]]);
+  is("and is still sent", Object.keys(answerPatch(here, lastSeen).set), ["a"]);
+  const gone = { a: { note: "old" } };
+  adoptAnswers(gone, { a: recCanon({ note: "old" }) }, {});
+  is("a student a colleague cleared is cleared here", Object.keys(gone), []);
+
+  // The stale-sync warning: only for exports the Radius sync shared, after a day and more.
+  const hr = 3600000, at = Date.UTC(2026, 9, 26, 20);
+  const bySync = (h) => ({ savedBy: SYNC_NAME, savedAt: at - h * hr });
+  is("a sync export from this morning is fresh", syncStaleSince({ attendance: bySync(7), roster: bySync(7) }, at), 0);
+  is("a sync export from 27 hours ago is stale", syncStaleSince({ attendance: bySync(27), roster: bySync(7) }, at), at - 27 * hr);
+  is("an export a person shared never warns", syncStaleSince({ attendance: { savedBy: "ethan", savedAt: at - 90 * hr }, roster: null }, at), 0);
 
   return { ran, fails };
 }
@@ -2821,26 +3938,7 @@ el("answerPicker").addEventListener("change", async () => {
     try {
       const loaded = JSON.parse(await file.text());
       if (!loaded || typeof loaded !== "object" || !loaded.students) throw new Error("not an answers file");
-      // Merge rather than replace, so loading a colleague's file does not silently drop
-      // answers already given on this machine.
-      for (const [key, rec] of Object.entries(loaded.students)) {
-        const mine = ovFor(key, true);
-        const seen = new Set(mine.holds.map((h) => h.start + ">" + (h.until || "")));
-        for (const h of rec.holds || []) if (!seen.has(h.start + ">" + (h.until || ""))) mine.holds.push(h);
-        Object.assign(mine.planHours, rec.planHours || {});
-        for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
-        for (const m of rec.charged || []) if (!mine.charged.includes(m)) mine.charged.push(m);
-        if (rec.weekdays) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
-        if (rec.planReading) mine.planReading = rec.planReading;
-        mine.holdDates = mine.holdDates || [];
-        const seenDates = new Set(mine.holdDates.map((h) => h.from + ">" + h.to));
-        for (const h of rec.holdDates || []) if (!seenDates.has(h.from + ">" + h.to)) mine.holdDates.push(h);
-        mine.hourAdjust = Object.assign({}, rec.hourAdjust || {}, mine.hourAdjust || {});
-        mine.auditChecked = mine.auditChecked || [];
-        for (const a of rec.auditChecked || []) if (!mine.auditChecked.includes(a)) mine.auditChecked.push(a);
-        if (rec.note) mine.note = rec.note;
-        for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
-      }
+      mergeAnswers(loaded, false);
       await saveOverrides();
       rerun();
       say("Loaded answers for " + Object.keys(loaded.students).length + " student(s).");
@@ -2852,7 +3950,39 @@ el("answerPicker").addEventListener("change", async () => {
 
 el("importAnswers").addEventListener("click", () => el("answerPicker").click());
 
+/*
+  Merge another set of answers into these rather than replacing them, so loading a
+  colleague's file does not silently drop answers already given here. Lists (holds,
+  months, answered questions) are combined. For single values (schedule, plan reading,
+  note) the loaded file wins, unless keepMine is set, when an answer already here is
+  kept: that is how a computer's pre-sharing answers join the shared copy without
+  overwriting what colleagues have answered since.
+*/
+function mergeAnswers(loaded, keepMine) {
+  for (const [key, raw] of Object.entries(loaded.students)) {
+    if (typeof key !== "string" || key === "__proto__" || recCanon(raw) === undefined) continue;
+    const rec = cleanRecord(raw);
+    const mine = ovFor(key, true);
+    const seen = new Set(mine.holds.map((h) => h.start + ">" + (h.until || "")));
+    for (const h of rec.holds || []) if (!seen.has(h.start + ">" + (h.until || ""))) mine.holds.push(h);
+    mine.planHours = keepMine ? Object.assign({}, rec.planHours || {}, mine.planHours) : Object.assign(mine.planHours, rec.planHours || {});
+    for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
+    for (const m of rec.charged || []) if (!mine.charged.includes(m)) mine.charged.push(m);
+    if (rec.weekdays && !(keepMine && mine.weekdays)) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
+    if (rec.planReading && !(keepMine && mine.planReading)) mine.planReading = rec.planReading;
+    mine.holdDates = mine.holdDates || [];
+    const seenDates = new Set(mine.holdDates.map((h) => h.from + ">" + h.to));
+    for (const h of rec.holdDates || []) if (!seenDates.has(h.from + ">" + h.to)) mine.holdDates.push(h);
+    mine.hourAdjust = Object.assign({}, rec.hourAdjust || {}, mine.hourAdjust || {});
+    mine.auditChecked = mine.auditChecked || [];
+    for (const a of rec.auditChecked || []) if (!mine.auditChecked.includes(a)) mine.auditChecked.push(a);
+    if (rec.note && !(keepMine && mine.note)) mine.note = rec.note;
+    for (const a of rec.answered || []) if (!mine.answered.includes(a)) mine.answered.push(a);
+  }
+}
+
 el("clearAnswers").addEventListener("click", async () => {
+  if (shared.on && !confirm("Clear every saved answer for everyone signed in? This cannot be undone. Save answers to a file first if you might want them back.")) return;
   overrides = { version: 1, students: {} };
   await saveOverrides();
   rerun();
@@ -2870,15 +4000,19 @@ el("run").addEventListener("click", () => {
     el("log").textContent = "";
     render();
     wireTabs();
+    shared.remote = [];
+    shared.remoteBy = [];
+    showSync();
   } catch (err) {
     say("Analysis failed: " + esc(err.message), "error");
     throw err;
   }
 });
 
-restoreSaved();
+boot();
 
 window.__mt = { selfCheck, readSheet, readDirectory, state, buildReport, restoreSaved, dbClear, buildQuestions,
+                shared, answerPatch, adoptAnswers, recCanon, sharedCopy,
                 get overrides() { return overrides; }, set overrides(v) { overrides = v; },
                 get focusKey() { return focusKey; }, renderQueue: () => renderQueue(), roundHours, parseDate, inferSchedule, settle,
                 get report() { return report; } };

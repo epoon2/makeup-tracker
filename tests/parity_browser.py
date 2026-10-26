@@ -5,7 +5,9 @@ sys.path.insert(0, ".")
 from reference.loaders import load
 from reference.report import build
 
-TODAY = "2026-08-20"
+import os
+# Pinned for the 8/20 baseline exports; PARITY_TODAY overrides it (e.g. for tests/synthetic_exports.mjs).
+TODAY = os.environ.get("PARITY_TODAY", "2026-08-20")
 
 async def js():
     async with async_playwright() as p:
@@ -24,7 +26,7 @@ async def js():
         out = await pg.evaluate("""async (p) => {
             const today = p.today;
             const M = window.__mt;
-            // Bytes rather than fetch: the page's CSP sets connect-src 'none', so the
+            // Bytes rather than fetch: the page's CSP allows connections to its own site only, so the
             // harness has to hand files over the way a user picking a file does.
             const buf = (b64) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
               for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; };

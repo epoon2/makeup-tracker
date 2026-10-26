@@ -1,62 +1,44 @@
-"""Property tests for FIFO settlement. Run: python3 -m pytest tests -q"""
-from reference.months import MonthResult
+"""What is owed: each month in the window stands alone. Run: python3 -m pytest tests -q"""
+import datetime as dt
+
 from reference.ledger import settle
+from reference.months import MonthResult
+from reference.report import judged_window
 
 
 def M(y, m, req, att, **kw):
     return MonthResult(year=y, month=m, required=req, attended=att, **kw)
 
 
-def test_later_excess_pays_earlier_shortfall():
-    s = settle([M(2026, 5, 8, 6), M(2026, 6, 8, 10)])
-    assert s.owed == 0
-    assert s.payments == [("June 2026", "May 2026", 2)]
+def test_a_short_month_owes_its_own_shortfall():
+    assert settle([M(2026, 8, 8, 6)]).owed == 2
+    assert settle([M(2026, 8, 8, 8)]).owed == 0
 
 
-def test_oldest_debt_is_paid_first():
-    s = settle([M(2026, 4, 8, 5), M(2026, 5, 8, 6), M(2026, 6, 8, 12)])
-    assert [p[1:] for p in s.payments] == [("Apr 2026", 3), ("May 2026", 1)]
-    assert s.owed == 1
-
-
-def test_debt_expires_after_two_calendar_months():
-    s = settle([M(2026, 4, 8, 4), M(2026, 5, 8, 8), M(2026, 6, 8, 8), M(2026, 7, 8, 16)])
-    assert s.expired_hours == 4
-    assert s.owed == 0
+def test_extra_hours_later_do_not_pay_an_earlier_month():
+    s = settle([M(2026, 8, 8, 6), M(2026, 9, 8, 10)])
+    assert s.owed == 2
     assert s.payments == []
 
 
-def test_debt_is_payable_on_the_last_month_of_grace():
-    s = settle([M(2026, 4, 8, 4), M(2026, 6, 8, 12)])
-    assert s.owed == 0
-    assert s.expired_hours == 0
-    assert s.payments == [("June 2026", "Apr 2026", 4)]
-
-
-def test_excess_does_not_bank_forward():
-    s = settle([M(2026, 5, 8, 12), M(2026, 6, 8, 4)])
-    assert s.owed == 4
-    assert s.unused_excess == 4
+def test_each_short_month_counts():
+    s = settle([M(2026, 8, 8, 5), M(2026, 9, 8, 6)])
+    assert [(d.label, d.hours) for d in s.debts] == [("Aug 2026", 3), ("Sep 2026", 2)]
 
 
 def test_hold_and_current_month_open_no_debt():
-    s = settle([M(2026, 5, 0, 0, on_hold=True), M(2026, 8, 8, 2, is_current=True)])
+    s = settle([M(2026, 8, 0, 0, on_hold=True), M(2026, 10, 8, 2, is_current=True)])
     assert s.owed == 0
     assert not s.debts
 
 
-def test_hours_already_sat_this_month_pay_old_debt_at_once():
-    s = settle([M(2026, 7, 8, 4), M(2026, 8, 8, 12, is_current=True)])
-    assert s.owed == 0
-    assert s.payments == [("August 2026", "Jul 2026", 4)]
+def test_this_months_hours_do_not_pay_an_earlier_month():
+    assert settle([M(2026, 9, 8, 4), M(2026, 10, 8, 12, is_current=True)]).owed == 4
 
 
-def test_current_month_requirement_is_not_paid_from_thin_air():
-    s = settle([M(2026, 7, 8, 4), M(2026, 8, 8, 6, is_current=True)])
-    assert s.owed == 4
-
-
-def test_current_month_still_opens_no_debt():
-    s = settle([M(2026, 8, 8, 2, is_current=True)])
-    assert s.owed == 0
-    assert s.debts == []
+def test_the_window_is_whole_months_two_back_from_today():
+    idx, start, shown_from, shown_to = judged_window(dt.date(2026, 10, 25), dt.date(2026, 8, 1), dt.date(2026, 10, 24))
+    assert start == dt.date(2026, 8, 1)
+    assert judged_window(dt.date(2026, 11, 1), dt.date(2026, 8, 1), dt.date(2026, 10, 31))[1] == dt.date(2026, 9, 1)
+    assert judged_window(dt.date(2027, 1, 10), dt.date(2026, 8, 1), dt.date(2027, 1, 9))[1] == dt.date(2026, 11, 1)
+    assert judged_window(dt.date(2026, 8, 20), dt.date(2026, 7, 1), dt.date(2026, 8, 19))[2] == dt.date(2026, 7, 1)

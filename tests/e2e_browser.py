@@ -16,7 +16,7 @@ async def main():
         import base64, pathlib as _pl
         _b = lambda f: base64.b64encode(_pl.Path(f).read_bytes()).decode()
         await pg.evaluate("""async (p) => {
-            // Bytes, not fetch: the page blocks all network with connect-src 'none'.
+            // Bytes, not fetch: the page's CSP lets it connect only to its own site.
             const toFile = (b64, name) => { const bin = atob(b64); const u = new Uint8Array(bin.length);
               for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new File([u], name); };
             const drop = (id, f) => { const dt = new DataTransfer(); dt.items.add(f);

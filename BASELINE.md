@@ -53,9 +53,38 @@ audit list appeared. The audit's 110 "folded" entries are 2-hour entries for stu
 whose sessions run 1 hour: the pre-convention attached-makeup pattern, listed for a
 person to reconcile, not auto-corrected.
 
+## The 25 Oct 2026 rule changes move these numbers
+
+Not re-run on real exports yet; regenerate this file on the next run and record what moved.
+What will move, and why:
+
+- **Makeups by session window.** Visits that start before or end after Mon/Tue/Thu/Fri
+  2:45-7:15 PM, Wed 1:45-7:15 PM, Sat 8:45 AM-1:15 PM (and all Sunday visits) are makeups. They are no
+  longer schedule evidence, so schedules and missed dates for some students change.
+- **Each month uses its own plan** from that month's rows, instead of the first row's
+  plan for every month.
+- **Plan reading** now uses the weekly pattern when there are fewer than two completed
+  months, so fewer plan questions, and some 2-hour students change reading.
+- **The audit lists only duplicates and future dates** (was 142 entries: 110 folded,
+  18 off-hours, 11 heavy months, 3 duplicates).
+- **The queue no longer asks about empty months**, so the 223-question figure drops
+  sharply.
+- **Only the current month and the two whole months before it are judged, and each month
+  stands alone.** Owed hours are now each completed month's own shortfall; later excess
+  hours no longer pay earlier months, so owed totals can rise for students who came extra
+  later. Months older than the window (July, once the date passes 1 October) owe nothing
+  and only feed schedules and plans, so owed totals for those drop. The header now reads
+  `Judging <first judged month> – <last attendance> (visits from <export start> help with
+  schedules) · ...`.
+- **The audit only looks at visits inside the judged months.**
+
+With the 8/20 exports evaluated on 20 Aug 2026 the judged months are June (no data), July
+and August, so the window itself changes nothing for that run; only the standalone rule
+does.
+
 ## Checking it
 
-1. Open `index.html`, click **Run self-check** at the bottom. Expect **96 checks passed**.
+1. Open `index.html`, click **Run self-check** at the bottom. Expect **129 checks passed**.
 2. Drop both exports, click Run, compare the five cards above.
 3. With Python: `python3 tests/parity_browser.py` must report **0 differing** across all
    students (`TODAY` in that script is pinned to 2026-08-20 for these inputs).

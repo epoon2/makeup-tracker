@@ -264,14 +264,13 @@ def build_month(
                 # A whole month with nothing recorded is assumed to be a hold: at this
                 # centre that is what an empty month almost always is, and charging a
                 # full plan for a month nobody attended produces makeup hours nobody
-                # will ever book. The review queue still asks, so it can be charged.
+                # will ever book. Not asked about (25 Oct 2026); it can be charged by hand.
                 result.assumed_hold = True
                 result.on_hold = True
                 result.required = 0
                 result.note = (
-                    f"nothing recorded for all of {result.label}, so it is assumed to be "
-                    f"a hold and nothing is owed for it; confirm in the queue if they "
-                    f"were enrolled and simply absent"
+                    f"nothing recorded for all of {result.label}, so it is taken as a "
+                    f"hold or a break and nothing is owed for it"
                 )
         else:
             result.note = f"enrolled but absent all of {result.label}"

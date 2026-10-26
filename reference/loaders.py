@@ -7,6 +7,7 @@ this module exists so its numbers can be checked against an independent implemen
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -39,6 +40,9 @@ ROSTER_COLUMNS = [
 # calls it "Arrival Time" (verified against the 8/20/2026 export, format "4:00 PM");
 # the rest are fallbacks, and a time inside Attendance Date is the last resort.
 TIME_COLUMNS = ["Arrival Time", "Start Time", "Session Start Time", "Session Start", "Time In", "Attendance Time", "Time"]
+# Columns that may carry the time a session ended ("Departure Time" in the real export).
+# Without one, the end is the start plus the minutes logged.
+END_TIME_COLUMNS = ["Departure Time", "End Time", "Session End Time", "Session End", "Time Out"]
 
 # 'Recurring' appears in Enrollment End Date to mean "no end date", not a date.
 NO_END_SENTINEL = {"recurring", "", "none", "n/a"}
@@ -101,6 +105,48 @@ def parse_time_of_day(value) -> int | None:
     return None if hour > 23 else hour * 60 + minute
 
 
+# The centre's session windows, by weekday (Monday first), in minutes after midnight: the
+# same windows the Radius roster tool uses for Time In and Time Out, all year round
+# (confirmed 25 Oct 2026). Mon, Tue, Thu, Fri 2:45-7:15 PM; Wed 1:45-7:15 PM; Sat 8:45 AM-
+# 1:15 PM; closed Sunday. A visit is regular only if it starts no earlier than the window
+# opens and ends no later than it closes; anything else is a makeup (the 12 AM marker is
+# one case): its hours count for its month, but it is not schedule or plan evidence.
+SESSION_WINDOWS = [
+    (14 * 60 + 45, 19 * 60 + 15),
+    (14 * 60 + 45, 19 * 60 + 15),
+    (13 * 60 + 45, 19 * 60 + 15),
+    (14 * 60 + 45, 19 * 60 + 15),
+    (14 * 60 + 45, 19 * 60 + 15),
+    (8 * 60 + 45, 13 * 60 + 15),
+    None,
+]
+
+
+def is_makeup_time(day: dt.date, start_minutes: int | None, end_minutes: int | None = None) -> bool:
+    if start_minutes is None:
+        return False
+    window = SESSION_WINDOWS[day.weekday()]
+    if window is None or start_minutes < window[0] or start_minutes > window[1]:
+        return True
+    return end_minutes is not None and end_minutes > window[1]
+
+
+def end_minutes_for(row: dict, start_minutes: int | None) -> int | None:
+    """When a visit ended: an end-time column first, else the start plus the minutes logged."""
+    for col in END_TIME_COLUMNS:
+        if col in row:
+            t = parse_time_of_day(row[col])
+            if t is not None:
+                return t
+    try:
+        minutes = float(row.get("Duration (Minutes)"))
+    except (TypeError, ValueError):
+        return None
+    if start_minutes is None or minutes != minutes or minutes <= 0 or minutes == float("inf"):
+        return None
+    return start_minutes + math.floor(minutes + 0.5)
+
+
 def start_minutes_for(row: dict) -> int | None:
     """Start time for one attendance row: a dedicated time column first, then a time
     written after the date inside Attendance Date ('8/5/2026 12:00 AM')."""
@@ -155,9 +201,9 @@ class Visit:
     hours: int
     sessions_per_month: int
     start_minutes: int | None = None
-    # 12:00 AM is never a real session (real ones run 1:30-7:30 pm). By convention an
-    # entry logged at exactly midnight is a makeup-redemption marker: its hours credit
-    # the month it is dated in, but it is not evidence of a weekly schedule.
+    # A makeup: a visit starting outside the session windows, 12 AM markers included.
+    # Its hours credit the month it is dated in, but it is not evidence of a weekly
+    # schedule. See SESSION_WINDOWS.
     marker: bool = False
 
 
@@ -214,7 +260,7 @@ def _read(path, columns, optional=()) -> pd.DataFrame:
 def load(attendance_path, roster_path) -> Loaded:
     warnings: list[str] = []
 
-    att = _read(attendance_path, ATTENDANCE_COLUMNS, optional=TIME_COLUMNS)
+    att = _read(attendance_path, ATTENDANCE_COLUMNS, optional=TIME_COLUMNS + END_TIME_COLUMNS)
     visits: list[Visit] = []
     unparsed_dates = 0
     zero_hour = 0
@@ -242,7 +288,7 @@ def load(attendance_path, roster_path) -> Loaded:
                 hours=hours,
                 sessions_per_month=spm,
                 start_minutes=start_minutes,
-                marker=start_minutes == 0,
+                marker=is_makeup_time(when, start_minutes, end_minutes_for(record, start_minutes)),
             )
         )
     if unparsed_dates:
@@ -251,8 +297,8 @@ def load(attendance_path, roster_path) -> Loaded:
         warnings.append(f"{zero_hour} attendance rows rounded to 0 hours and were ignored")
     if visits and not timed:
         warnings.append(
-            "the attendance export carries no session start times, so 12 AM "
-            "makeup-redemption markers cannot be recognised"
+            "the attendance export carries no session start times, so makeups (12 AM entries "
+            "and visits outside session hours) cannot be recognised"
         )
 
     ros = _read(roster_path, ROSTER_COLUMNS)
@@ -272,24 +318,27 @@ def load(attendance_path, roster_path) -> Loaded:
         if existing is None:
             roster[key] = record
             continue
-        collisions.add(key)
-        # Two records under one name. Prefer the active one; if both are active or both
-        # are not, prefer the more recently attending. Either way mark it ambiguous so
-        # the report can say so rather than quietly picking.
+        # Old records under the same name are normal (a student who left and
+        # re-enrolled); the live one is picked below. Two students who really share a
+        # name are told apart in Radius with " *" after the last name, which makes a
+        # different name here. So only two Enrolled records under exactly the same name
+        # are flagged.
+        if record.expected and existing.expected:
+            collisions.add(key)
+        # Prefer the active one; if both are active or both are not, prefer the more
+        # recently attending.
         better = record.active and not existing.active
         if not better and record.active == existing.active:
             better = (record.last_attendance or dt.date.min) > (existing.last_attendance or dt.date.min)
         if better:
-            record.ambiguous = True
             roster[key] = record
-        else:
-            existing.ambiguous = True
     for key in collisions:
         roster[key].ambiguous = True
     if collisions:
         warnings.append(
-            f"{len(collisions)} names appear on more than one roster record; "
-            "those students are flagged rather than silently merged"
+            f"{len(collisions)} name(s) belong to more than one Enrolled roster record; "
+            'those students are flagged. In Radius, two students who share a name get " *" '
+            "after the last name"
         )
 
     return Loaded(visits=visits, roster=roster, warnings=warnings)

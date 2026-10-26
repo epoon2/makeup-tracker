@@ -7,10 +7,10 @@ import collections
 import datetime as dt
 from dataclasses import dataclass, field
 
-from .audit import audit_month, audit_visits
+from .audit import audit_visits
 from .loaders import Loaded, RosterRecord
-from .ledger import Settlement, settle
-from .months import UNVERIFIABLE, MonthResult, build_month, month_bounds, months_between
+from .ledger import JUDGED_MONTHS_BACK, Settlement, settle
+from .months import MonthResult, build_month, month_bounds, months_between
 from .overrides import Overrides, month_key
 from .schedule import Schedule, infer, infer_for_month
 
@@ -67,23 +67,15 @@ class StudentReport:
         return sorted(out)
 
 
-def payable_window(first_visit: dt.date, data_through: dt.date) -> tuple[dt.date, dt.date]:
-    """The span the report is really about: two months back from the newest attendance.
-
-    Anything older than that has expired out of the grace window, so showing the full
-    export range would overstate what the numbers cover. Clipped to the start of the
-    export, because with less than two months of data the window is simply everything
-    there is. Display only; the calculation still runs over the whole export, since a
-    partial first month cannot produce a monthly requirement.
-    """
-    month = data_through.month - 2
-    year = data_through.year
-    if month <= 0:
-        month += 12
-        year -= 1
-    day = min(data_through.day, calendar.monthrange(year, month)[1])
-    back = dt.date(year, month, day)
-    return max(first_visit, back), data_through
+def judged_window(today: dt.date, first_visit: dt.date, data_through: dt.date):
+    """The months the report judges: from the month two months before today through the
+    current month, whole months (25 Oct 2026). On 25 Oct that is August-October; on 1 Nov,
+    September-November. Attendance before the window only feeds schedules and plans.
+    Returns (first judged month index, window start date, shown-from date, shown-to date).
+    Mirrors judgedWindow() in index.html."""
+    from_idx = today.year * 12 + (today.month - 1) - JUDGED_MONTHS_BACK
+    start = dt.date(from_idx // 12, from_idx % 12 + 1, 1)
+    return from_idx, start, max(first_visit, start), data_through
 
 
 @dataclass
@@ -116,16 +108,53 @@ class Report:
         return sorted((s for s in self.students if s.on_hold), key=lambda s: s.display)
 
 
-def resolve_plan(raw_plan: int, visits, today: dt.date, pinned: str | None) -> dict:
+def monthly_plans(visits, span) -> tuple[list[int], list[int]]:
+    """The plan in force each month, from the Sessions Per Month on that month's rows
+    (the latest row in the month wins). A month with no rows keeps the month before's
+    plan; months before the first row take the first known plan. Returns (plans, own),
+    own being 0 for months with no rows of their own. Mirrors monthlyPlans()."""
+    latest: dict[tuple[int, int], tuple[dt.date, int]] = {}
+    for v in visits:
+        if not v.sessions_per_month:
+            continue
+        k = (v.date.year, v.date.month)
+        was = latest.get(k)
+        if was is None or v.date >= was[0]:
+            latest[k] = (v.date, v.sessions_per_month)
+    own = [latest[(y, m)][1] if (y, m) in latest else 0 for (y, m) in span]
+    plans: list[int] = []
+    last = 0
+    for x in own:
+        if x:
+            last = x
+        plans.append(last)
+    first = next((x for x in own if x), 8)
+    for i in range(len(plans)):
+        if plans[i]:
+            break
+        plans[i] = first
+    return plans, own
+
+
+def _day_number(d: dt.date) -> int:
+    return d.toordinal() - dt.date(1970, 1, 1).toordinal()
+
+
+def resolve_plan(plans: list[int], span, visits, today: dt.date, pinned: str | None) -> dict:
     """What does the plan number mean for this student: hours, or sessions?
 
     Radius plans are sold in 'sessions per month', and for one-hour students the two
     readings are the same number. For two-hour students the centre sometimes leaves the
     plan at 4 while delivering 4 x 2 = 8 hours a month, and the plan cannot always be
-    changed (it is tied to billing). So the meaning is inferred from what full months
-    actually delivered, and a person can pin it either way from the review queue.
+    changed (it is tied to billing). So the meaning is read from what the student attends:
+    two or more completed months decide by the median of each month's real hours as a
+    multiple of that month's plan; otherwise (or on a tie) the weekly pattern decides, real
+    hours per week they came over at least three weeks, as a month, against the current
+    plan, but only when one reading is at most half as far off as the other. A person can
+    pin it either way from the review queue. Mirrors resolvePlan().
     """
-    raw = raw_plan if raw_plan > 0 else 8
+    latest_raw = plans[-1]
+    raw = latest_raw if latest_raw > 0 else 8
     real = [v for v in visits if v.hours > 0 and not v.marker]
     out = {"hours": raw, "raw": raw, "session_hours": 1, "reading": "hours", "certain": True, "source": "plan"}
     if not real:
@@ -144,15 +173,42 @@ def resolve_plan(raw_plan: int, visits, today: dt.date, pinned: str | None) -> d
     if pinned == "sessions":
         return {**out, "hours": raw * length, "reading": "sessions", "source": "override"}
 
-    # Evidence: real (non-marker) hours per completed month with any attendance.
-    totals: dict[tuple[int, int], int] = collections.defaultdict(int)
+    # Completed months: real hours as a multiple of that month's plan.
+    index = {ym: i for i, ym in enumerate(span)}
+    totals: dict[tuple[int, int], int] = {}
     for v in real:
         if (v.date.year, v.date.month) == (today.year, today.month):
             continue
-        totals[(v.date.year, v.date.month)] += v.hours
-    values = sorted(totals.values())
-    if len(values) < 2:
-        return {**out, "certain": False}
+        k = (v.date.year, v.date.month)
+        totals[k] = totals.get(k, 0) + v.hours
+    # A month outside the span (a future-dated entry) is measured against the current plan.
+    ratios = sorted(h / ((plans[index[k]] if k in index else 0) or raw) for k, h in totals.items())
+    if len(ratios) >= 2:
+        mid = len(ratios) // 2
+        typical = ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+        d1, d2 = abs(typical - 1), abs(typical - length)
+        if d2 < d1:
+            return {**out, "hours": raw * length, "reading": "sessions", "source": "inferred"}
+        if d1 < d2:
+            return out
+
+    # The weekly pattern: Monday-to-Sunday weeks with real attendance.
+    weeks: dict[int, int] = {}
+    for v in real:
+        w = (_day_number(v.date) + 3) // 7
+        weeks[w] = weeks.get(w, 0) + v.hours
+    if len(weeks) >= 3:
+        total = 0
+        for h in weeks.values():
+            total += h
+        per_month = total / len(weeks) * 52 / 12
+        r = per_month / raw
+        d1, d2 = abs(r - 1), abs(r - length)
+        if d2 * 2 <= d1:
+            return {**out, "hours": raw * length, "reading": "sessions", "source": "weekly"}
+        if d1 * 2 <= d2:
+            return {**out, "source": "weekly"}
+    return {**out, "certain": False}
 
     mid = len(values) // 2
     typical = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
@@ -179,6 +235,7 @@ def build(loaded: Loaded, today: dt.date | None = None,
     data_through = max(v.date for v in loaded.visits)
     first_visit = min(v.date for v in loaded.visits)
     span = months_between(first_visit, today)
+    from_idx, window_start, window_from, window_to = judged_window(today, first_visit, data_through)
 
     by_student: dict[str, list] = collections.defaultdict(list)
     for visit in loaded.visits:
@@ -186,10 +243,12 @@ def build(loaded: Loaded, today: dt.date | None = None,
 
     students: list[StudentReport] = []
     for key, visits in by_student.items():
-        raw_plan = next((v.sessions_per_month for v in visits if v.sessions_per_month), 8)
         record = loaded.roster.get(key)
         over = overrides.peek(key)
-        plan_info = resolve_plan(raw_plan, visits, today, over.plan_reading if over else None)
+        plans, _own = monthly_plans(visits, span)
+        plan_info = resolve_plan(plans, span, visits, today, over.plan_reading if over else None)
+        # Hours per plan unit: the session length when the plan counts sessions, else 1.
+        unit = plan_info["session_hours"] if plan_info["reading"] == "sessions" else 1
         plan = plan_info["hours"]
 
         # An export showing the student enrolled closes any open hold, dated by the month
@@ -212,10 +271,11 @@ def build(loaded: Loaded, today: dt.date | None = None,
 
         months = []
         schedules: dict[tuple[int, int], Schedule] = {}
-        for (y, m) in span:
+        for i, (y, m) in enumerate(span):
             first, last = month_bounds(y, m)
             mk = month_key(y, m)
-            sched = infer_for_month(visits, plan, first, last)
+            month_plan = plans[i] * unit
+            sched = infer_for_month(visits, month_plan, first, last)
             if over and over.weekdays:
                 sched = Schedule(
                     tuple(sorted(over.weekdays)),
@@ -226,7 +286,7 @@ def build(loaded: Loaded, today: dt.date | None = None,
             schedules[(y, m)] = sched
             months.append(
                 build_month(
-                    y, m, visits, sched, plan, record, today, data_through,
+                    y, m, visits, sched, month_plan, record, today, data_through,
                     on_hold=over.held(mk) if over else None,
                     plan_override=(over.plan_hours.get(mk) if over else None),
                     force_not_enrolled=bool(over and mk in over.not_enrolled),
@@ -238,6 +298,8 @@ def build(loaded: Loaded, today: dt.date | None = None,
         # The student-level schedule is the one that applied most recently, since that is
         # what a person looking at the row wants to know. Earlier months keep their own.
         schedule = schedules[span[-1]]
+        # Only the window's months are judged; earlier ones only fed schedules and plans.
+        months = [mo for mo in months if mo.year * 12 + (mo.month - 1) >= from_idx]
         report = StudentReport(
             key=key,
             display=_display(key),
@@ -254,29 +316,20 @@ def build(loaded: Loaded, today: dt.date | None = None,
             report.flags.append(
                 f"plan {plan_info['raw']}/month read as {plan_info['raw']} sessions of "
                 f"{plan_info['session_hours']} hrs = {plan} hrs/month"
-                + (" (set by hand)" if plan_info["source"] == "override" else " (from the attendance pattern)")
+                + (" (set by hand)" if plan_info["source"] == "override"
+                   else " (from their weekly pattern)" if plan_info["source"] == "weekly"
+                   else " (from the attendance pattern)")
             )
         if not schedule.confident:
             report.flags.append(f"schedule uncertain: {schedule.reason}")
         if over and over.note:
             report.flags.append(f"note: {over.note}")
         if record and record.ambiguous:
-            report.flags.append("more than one roster record under this name")
+            report.flags.append("two Enrolled roster records under exactly this name")
         if record is None:
             report.flags.append("no roster record matched")
-        for month in months:
-            if month.assumed_hold:
-                report.flags.append(f"{month.label} assumed to be a hold; nothing owed for it")
-            elif month.absent_whole_month and month.absence_basis == UNVERIFIABLE:
-                report.flags.append(
-                    f"{month.required} hrs charged for {month.label}; enrolled and absent, confirmed by hand"
-                )
-        report.audit = audit_visits(visits, schedule.session_hours, today)
-        for month in months:
-            entry = audit_month(key, month.label, month.required, month.attended,
-                                month.marker_hours, month.on_hold)
-            if entry:
-                report.audit.append(entry)
+        # Assumed holds and hand-charged empty months are notes on the page, not flags.
+        report.audit = audit_visits([v for v in visits if v.date >= window_start], today)
         students.append(report)
 
     attended_keys = set(by_student)
@@ -288,16 +341,6 @@ def build(loaded: Loaded, today: dt.date | None = None,
     never.sort(key=lambda r: _display(r.key))
 
     warnings = list(loaded.warnings)
-    elapsed = [m for m in span if m != (today.year, today.month)]
-    if len(elapsed) < 2:
-        # Not a fix-your-export warning. Attendance was only recorded reliably from
-        # 1 July 2026, so there is nothing earlier to load. The grace window simply has
-        # less to work with than it will next month, and the report should say so rather
-        # than look like it checked further back than it did.
-        warnings.append(
-            f"only {len(elapsed)} completed month(s) of attendance are available, so the "
-            "two-month grace window cannot settle debt against a later month yet"
-        )
     shaky_grant = sum(
         s.current.granted for s in students if s.current and not s.schedule.confident
     )
@@ -314,7 +357,6 @@ def build(loaded: Loaded, today: dt.date | None = None,
             "their missed dates and behind-pace flags are estimates"
         )
 
-    window_from, window_to = payable_window(first_visit, data_through)
     return Report(
         generated_for=today,
         data_through=data_through,

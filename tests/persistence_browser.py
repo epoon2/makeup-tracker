@@ -1,7 +1,7 @@
 import asyncio, pathlib
 from playwright.async_api import async_playwright
 
-# Bytes, not fetch: the page's CSP sets connect-src 'none', so files must be handed
+# Bytes, not fetch: the page's CSP allows connections to its own site only, so files must be handed
 # over the way a real user picking a file does.
 import base64
 def _b64(p): return base64.b64encode(pathlib.Path(p).read_bytes()).decode()
