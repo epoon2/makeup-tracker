@@ -359,7 +359,7 @@ email attachment. There is no sign-in there at all, because there is no server t
 Test on a `development` branch first. Branch deploys cost no Netlify credits; only a
 deploy to the live site does (see "Netlify credits" below).
 
-1. **Setup code.** In Netlify, open **Site configuration → Environment variables** and add
+1. **Setup code.** In Netlify, open **Project configuration → Environment variables** and add
    `SETUP_CODE`: any phrase of 8 or more characters, for all deploy contexts.
 2. **Branch deploys.** Open **Project configuration → Developer settings → Continuous
    deployment → Branches and deploy contexts → Configure**. Choose **Let me add
@@ -378,7 +378,13 @@ deploy to the live site does (see "Netlify credits" below).
 6. **Go live.** On GitHub, open a pull request from `development` into `main` and merge
    it. That is one production deploy (15 credits).
 7. **Set up the live site.** Open it and set it up again with the setup code: the live
-   site starts with no accounts. Then add everyone from **Accounts**.
+   site starts with no accounts. Then add everyone from **Accounts**. Do this while the
+   project is still private, so nobody else can reach the setup screen first.
+8. **Make it public.** **Project configuration → General → Visitor access → Project
+   visibility → Public.** New Netlify projects are private: until then only people signed
+   in to Netlify can open the site, and the Radius sync cannot reach it.
+
+The live site went up this way on 26 Oct 2026 (pull request #1).
 
 `SETUP_CODE` can stay. Setup refuses to run once any account exists.
 
@@ -386,7 +392,9 @@ Optionally, add `SESSION_SECRET` (32 or more random characters) to sign the sign
 cookies. Without it, the site makes its own secret and keeps it in Netlify Blobs.
 
 For the Radius sync to send the exports, add `SYNC_TOKEN`: 32 or more random characters,
-for all deploy contexts, marked as a secret. The same value goes into TC-Radius-Helper as
+for all deploy contexts. **Leave "Contains secret values" unchecked**: on the free plan,
+Netlify users have reported secret-flagged values missing inside functions, which would
+make every token look wrong. The same value goes into TC-Radius-Helper as
 the `MAKEUP_TRACKER_TOKEN` secret. Without `SYNC_TOKEN` the sync's upload is switched off
 and refused. Changing it takes effect on the next deploy; a branch deploy is enough for
 the development site, but the live site needs a production deploy (or **Deploys → Trigger
@@ -398,9 +406,12 @@ Everything lives in **Netlify Blobs** on the site, in two stores:
   passwords) and the wrong-password counters.
 - `makeup-data` holds the answers and the two cut-down exports.
 
-Deploy previews, branch deploys and `netlify dev` each use their own stores
-(`preview-makeup-auth`, `preview-makeup-data`). A preview starts empty, with its own setup
-and its own accounts, and cannot read or change the live site's data.
+Every deploy that is not the live site (the `development` branch deploy and the
+pull-request previews) uses one other pair of stores, `preview-makeup-auth` and
+`preview-makeup-data`. They have their own setup, accounts and data, and cannot read or
+change the live site's. They share them with each other, though: a pull-request preview
+shows the development site's accounts and data, so test there with made-up students.
+`netlify dev` keeps its data on the computer it runs on.
 
 The repo is public. In Netlify, under **Site configuration → Build & deploy → Deploy
 Previews**, keep pull requests from forks from deploying without your approval.
