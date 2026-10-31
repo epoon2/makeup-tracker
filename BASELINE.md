@@ -26,7 +26,7 @@ change if you run on a different day. Everything else is stable for these inputs
 | Missed dates identified (week-netted) | 1657 |
 | Months assumed on hold | 62 |
 | Schedules not confidently inferred | 131 of 389 |
-| 12 AM makeup-redemption markers recognised | 10 |
+| 12 AM makeup-redemption markers recognized | 10 |
 | Plan-reading questions in the queue | 24 |
 | Attendance audit entries | 142 (110 folded, 18 off-hours, 11 heavy months, 3 duplicates) |
 
@@ -47,7 +47,7 @@ at 142.
 ## Why these differ from the 8/18 baseline
 
 Two things moved at once, deliberately, on 20 Aug 2026: the exports are two days newer,
-and the rules changed — 12 AM markers recognised (and kept out of schedule inference),
+and the rules changed — 12 AM markers recognized (and kept out of schedule inference),
 plan-reading inference added, current-month hours now pay old debt immediately, and the
 audit list appeared. The audit's 110 "folded" entries are 2-hour entries for students
 whose sessions run 1 hour: the pre-convention attached-makeup pattern, listed for a

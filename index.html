@@ -861,10 +861,12 @@ function normalise(attendance, roster) {
       marker: isMakeupTime(when.n, startMinutes, endMinutesFor(r, startMinutes)),
     });
   }
-  if (unparsed) warnings.push(unparsed + " attendance rows had an unreadable date and were skipped");
-  if (zero) warnings.push(zero + " attendance rows rounded to 0 hours and were ignored");
+  if (unparsed) warnings.push(unparsed === 1 ? "1 attendance row had an unreadable date and was skipped"
+    : unparsed + " attendance rows had an unreadable date and were skipped");
+  if (zero) warnings.push(zero === 1 ? "1 attendance row rounded to 0 hours and was ignored"
+    : zero + " attendance rows rounded to 0 hours and were ignored");
   if (visits.length && !timed) {
-    warnings.push("the attendance export carries no session start times, so makeups (12 AM entries and visits outside session hours) cannot be recognised");
+    warnings.push("the attendance export carries no session start times, so makeups (12 AM entries and visits outside session hours) cannot be recognized");
   }
 
   const people = new Map();

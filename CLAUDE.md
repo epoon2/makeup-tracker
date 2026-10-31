@@ -354,8 +354,12 @@ in the export, so with an export starting 1 August it cannot appear before Novem
 
 ## Deploying
 
+**Live since 26 Oct 2026** (pull request #1 merged `development` into `main`; the project
+is public; the Radius sync sends the exports twice a day).
+
 **How Ethan deploys:** he uploads through GitHub's web page (Add file → Upload files) onto
-the `development` branch, one commit per update. Hand him a zip of **only the files that
+the `development` branch, one commit per update. A merge into `main` is a production deploy
+(15 credits); a merge that only changes notes is skipped by the `ignore` rule. Hand him a zip of **only the files that
 changed**, each in its folder (e.g. `makeup-tracker/netlify/lib/core.mjs`), and list them.
 
 Push to `main` and Netlify redeploys. Push a branch and Netlify builds a preview at its own
