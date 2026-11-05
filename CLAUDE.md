@@ -347,6 +347,15 @@ Per-month inference was measured as the best of several approaches against the 1
 who fully met July, but the ceiling is low. **The review queue is the real fix**: a
 hand-confirmed schedule beats any inference, and answers persist.
 
+**A short month takes last month's schedule** (both engines, `inferScheduleForMonth` /
+`infer_for_month`). Under three weeks of attendance, the month uses the previous month's
+inferred schedule, and is flagged only when as many of its sessions fall off those days as
+on them (then `newWeekdays` offers this month's days as the other answer). Before Nov 5 it
+widened to all history and flagged any short month whose days differed from it, so on the
+first days of November nearly every student was a question (161), since one week shows only
+some of their days. Ethan: "It should infer their schedule based on the last month, and if
+there is a discrepancy between that and the new month's sessions, then it should ask me."
+
 **The "likely on a bigger plan" note needs three completed months.** It reads every month
 in the export, so with an export starting 1 August it cannot appear before November.
 

@@ -189,6 +189,12 @@ Each student's regular weekly schedule is inferred from their attendance history
 scheduled date with no attendance is reported as a missed date. Today is never counted as
 missed, because attendance is entered at end of day.
 
+Each month is read on its own once it has three weeks of attendance. A shorter month (the
+current month in its first weeks) takes last month's schedule: a Tue/Fri student who has
+only had a Tuesday so far is still Tue/Fri, not a question. The review queue asks only when
+as many of this month's sessions fall on other days as on last month's, and offers this
+month's days as the other answer.
+
 ## Remembering the exports
 
 (On one computer, without signing in. Signed in, the exports come from the shared copy

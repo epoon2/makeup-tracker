@@ -964,26 +964,33 @@ function inferScheduleForMonth(visits, requiredHours, firstN, lastN) {
   const weeks = new Set(inMonth.map((v) => isoWeekKey(v.date.n))).size;
   if (weeks >= 3) return inferSchedule(inMonth, requiredHours);
 
-  // Widen backwards only. Later months must not decide an earlier month's schedule.
-  const upto = visits.filter((v) => v.date.n <= lastN && v.hours > 0 && !v.marker);
-  if (!upto.length) return inferSchedule(visits, requiredHours);
+  // A short month (the current month, early on) takes last month's schedule. Backwards
+  // only: later months must not decide an earlier month's schedule.
+  const earlier = visits.filter((v) => v.date.n < firstN && v.hours > 0 && !v.marker);
+  if (!earlier.length) return inferSchedule(inMonth.length ? inMonth : visits, requiredHours);
 
-  const widened = inferSchedule(upto, requiredHours);
-  if (!inMonth.length) return widened;
+  const prev = fromDayNumber(firstN - 1);
+  const lastMonth = inferScheduleForMonth(visits, requiredHours, mkDate(prev.y, prev.m, 1).n, firstN - 1);
+  if (!inMonth.length) return lastMonth;
 
-  // A short month is normal for the current month and not by itself a reason to distrust
-  // the answer. What matters is whether the month's own days agree with the wider
-  // history. Agreement means the schedule is steady; disagreement means it moved, and
-  // that is the case worth flagging.
-  const monthOnly = inferSchedule(inMonth, requiredHours);
-  if (monthOnly.weekdays.join(",") === widened.weekdays.join(",")) return widened;
+  // A week in, a Tue/Fri student may only have had a Tuesday yet: the days not seen so far
+  // simply haven't come round, so sessions on last month's days agree with it. Only when
+  // as many of this month's sessions fall on other days as on those has the schedule
+  // perhaps changed - and that is the case worth asking about. (Makeups outside the
+  // session windows never count here; one on another day is outweighed once the
+  // usual days are kept.)
+  const usual = new Set(lastMonth.weekdays);
+  const off = inMonth.filter((v) => !usual.has(weekdayOf(v.date.n))).length;
+  if (off * 2 < inMonth.length) return lastMonth;
+  const seen = [...new Set(inMonth.map((v) => weekdayOf(v.date.n)))].sort((a, b) => a - b);
   return {
-    weekdays: widened.weekdays,
-    sessionHours: widened.sessionHours,
+    weekdays: lastMonth.weekdays,
+    sessionHours: lastMonth.sessionHours,
     confident: false,
-    reason: "only " + weeks + " week(s) attended this month, and those days (" +
-            scheduleLabel(monthOnly) + ") differ from the earlier pattern (" +
-            scheduleLabel(widened) + ")",
+    reason: "this month's sessions so far are on " + seen.map((w) => WEEKDAYS[w]).join(", ") +
+            ", not last month's days (" + scheduleLabel(lastMonth) + ")",
+    // What this month alone suggests, offered as the other answer.
+    newWeekdays: inferSchedule(inMonth, requiredHours).weekdays,
   };
 }
 
@@ -1717,6 +1724,10 @@ function buildQuestions(rep) {
       if (!wasAnswered(s.key, id)) {
         const guessed = s.schedule.weekdays;
         const alt = [];
+        // This month's own days first, when they are why it is asking.
+        if (s.schedule.newWeekdays && s.schedule.newWeekdays.join(",") !== guessed.join(",")) {
+          alt.push(s.schedule.newWeekdays);
+        }
         for (const mo of s.months) {
           const ms = s.schedules[mo.y + "-" + mo.m];
           if (ms && ms.weekdays.join(",") !== guessed.join(",")) alt.push(ms.weekdays);
@@ -3540,6 +3551,24 @@ function selfCheck() {
      inferScheduleForMonth(moved, 8, D(2026, 7, 1).n, D(2026, 7, 31).n).weekdays, [0, 2]);
   is("August gets the new days",
      inferScheduleForMonth(moved, 8, D(2026, 8, 1).n, D(2026, 8, 31).n).weekdays, [1, 3]);
+  // A new month a week in: last month's days stand until the sessions say otherwise.
+  const tueFri = [];
+  for (let w = 0; w < 4; w++) { tueFri.push(visit(2026, 10, 6 + w * 7, 1)); tueFri.push(visit(2026, 10, 9 + w * 7, 1)); }
+  const NOV = [D(2026, 11, 1).n, D(2026, 11, 30).n];
+  const early = inferScheduleForMonth(tueFri.concat([visit(2026, 11, 3, 1)]), 8, ...NOV);
+  is("a Tuesday so far, Tue/Fri last month: still Tue/Fri", early.weekdays, [1, 4]);
+  is("and not a question", early.confident, true);
+  const none = inferScheduleForMonth(tueFri, 8, ...NOV);
+  is("no sessions yet this month: last month's days, confidently", [none.weekdays, none.confident], [[1, 4], true]);
+  const changed = inferScheduleForMonth(tueFri.concat([visit(2026, 11, 2, 1), visit(2026, 11, 4, 1)]), 8, ...NOV);
+  is("Mon and Wed this month instead: asked", changed.confident, false);
+  is("still guessing last month's days", changed.weekdays, [1, 4]);
+  is("offering this month's as the other answer", changed.newWeekdays, [0, 2]);
+  is("and saying why", changed.reason, "this month's sessions so far are on Mon, Wed, not last month's days (Tue, Fri)");
+  const half = inferScheduleForMonth(tueFri.concat([visit(2026, 11, 3, 1), visit(2026, 11, 5, 1)]), 8, ...NOV);
+  is("Tue kept, Thu instead of Fri: asked", [half.confident, half.newWeekdays], [false, [1, 3]]);
+  const extra = inferScheduleForMonth(tueFri.concat([visit(2026, 11, 3, 1), visit(2026, 11, 6, 1), visit(2026, 11, 7, 1)]), 8, ...NOV);
+  is("Tue and Fri kept, one Saturday too: not asked", [extra.weekdays, extra.confident], [[1, 4], true]);
 
   // --- missed dates and the data horizon ---------------------------------------------
   // Export stops on the 17th, today is the 19th: the 18th is unknown, not missed.
