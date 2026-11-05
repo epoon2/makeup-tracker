@@ -114,38 +114,44 @@ def infer_for_month(
     sessions in both months. Judging each month on its own data fixes that, and measured
     against students who fully met July it is the best of the options tried.
 
-    A month with thin attendance cannot support its own inference, so it widens to include
-    everything up to the end of that month before falling back to the whole record. The
-    widening is backwards only: later months must not decide what an earlier month's
-    schedule was.
+    A month with thin attendance cannot support its own inference, so it takes the
+    previous month's schedule (itself inferred the same way). That is backwards only:
+    later months must not decide what an earlier month's schedule was. The thin month
+    is flagged only when as many of its sessions fall off those days as on them.
     """
     in_month = [v for v in visits if first <= v.date <= last and v.hours > 0 and not v.marker]
     weeks = len({(v.date.isocalendar()[0], v.date.isocalendar()[1]) for v in in_month})
     if weeks >= 3:
         return infer(in_month, required_hours)
 
-    upto = [v for v in visits if v.date <= last and v.hours > 0 and not v.marker]
-    if not upto:
-        return infer(visits, required_hours)
+    # A short month (the current month, early on) takes last month's schedule. Backwards
+    # only: later months must not decide an earlier month's schedule.
+    earlier = [v for v in visits if v.date < first and v.hours > 0 and not v.marker]
+    if not earlier:
+        return infer(in_month if in_month else visits, required_hours)
 
-    widened = infer(upto, required_hours)
+    prev_last = first - dt.timedelta(days=1)
+    last_month = infer_for_month(visits, required_hours, prev_last.replace(day=1), prev_last)
     if not in_month:
-        return widened
+        return last_month
 
-    # The month is too short to stand alone, which is normal for the current month and
-    # not by itself a reason to distrust the answer. What matters is whether the month's
-    # own days agree with the wider history. Agreement means the schedule is steady and
-    # the short month is simply confirming it; disagreement means it moved, and that is
-    # the case worth flagging.
-    month_only = infer(in_month, required_hours)
-    if set(month_only.weekdays) == set(widened.weekdays):
-        return widened
-    widened.confident = False
-    widened.reason = (
-        f"only {weeks} week(s) attended this month, and those days "
-        f"({month_only.label()}) differ from the earlier pattern ({widened.label()})"
+    # A week in, a Tue/Fri student may only have had a Tuesday yet: the days not seen so far
+    # simply haven't come round, so sessions on last month's days agree with it. Only when
+    # as many of this month's sessions fall on other days as on those has the schedule
+    # perhaps changed, and that is the case worth asking about. (A single makeup on another
+    # day, with the usual days kept, is not.)
+    usual = set(last_month.weekdays)
+    off = sum(1 for v in in_month if v.date.weekday() not in usual)
+    if off * 2 < len(in_month):
+        return last_month
+    seen = sorted({v.date.weekday() for v in in_month})
+    return Schedule(
+        last_month.weekdays,
+        last_month.session_hours,
+        False,
+        f"this month's sessions so far are on {', '.join(WEEKDAY_NAMES[d] for d in seen)}, "
+        f"not last month's days ({last_month.label()})",
     )
-    return widened
 
 
 def scheduled_dates(schedule: Schedule, first: dt.date, last: dt.date) -> list[dt.date]:
