@@ -12,7 +12,7 @@ from .loaders import Loaded, RosterRecord
 from .ledger import JUDGED_MONTHS_BACK, Settlement, settle
 from .months import MonthResult, build_month, month_bounds, months_between
 from .overrides import Overrides, month_key
-from .schedule import Schedule, infer, infer_for_month
+from .schedule import Schedule, infer, infer_for_month, schedule_for_month
 
 
 @dataclass
@@ -275,14 +275,15 @@ def build(loaded: Loaded, today: dt.date | None = None,
             first, last = month_bounds(y, m)
             mk = month_key(y, m)
             month_plan = plans[i] * unit
-            sched = infer_for_month(visits, month_plan, first, last)
-            if over and over.weekdays:
-                sched = Schedule(
-                    tuple(sorted(over.weekdays)),
-                    over.session_hours or sched.session_hours,
-                    True,
-                    "set by hand",
-                )
+            # Answers apply per month; a finished month nobody answered for goes by what
+            # the student actually came on (schedule_for_month).
+            sched = schedule_for_month(
+                visits, month_plan, first, last,
+                over.schedule_by_month if over else None,
+                over.weekdays if over else None,
+                over.session_hours if over else None,
+                finished=i < len(span) - 1,
+            )
             schedules[(y, m)] = sched
             months.append(
                 build_month(

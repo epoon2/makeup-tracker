@@ -62,8 +62,12 @@ class StudentOverrides:
     # Months confirmed as enrolled-but-absent, so the full plan is charged.
     # Without this a fully empty month is assumed to be a hold.
     charged: set[str] = field(default_factory=set)
+    # A schedule answer saved before 7 Nov 2026, with no month: carried from the first month.
     weekdays: tuple[int, ...] | None = None
     session_hours: int | None = None
+    # Schedule answers per month, "YYYY-MM" -> {"weekdays": (...), "session_hours": n}: each
+    # covers its month and carries forward to the next answer, never back.
+    schedule_by_month: dict[str, dict] = field(default_factory=dict)
     # 'hours' or 'sessions': what the plan number means for this student, pinned by a
     # person when the attendance history cannot decide it.
     plan_reading: str | None = None
@@ -120,7 +124,7 @@ class Overrides:
         out: dict = {"version": 1, "students": {}}
         for key, record in self.students.items():
             if not (record.holds or record.plan_hours or record.not_enrolled
-                    or record.charged or record.weekdays or record.plan_reading
+                    or record.charged or record.weekdays or record.schedule_by_month or record.plan_reading
                     or record.hold_dates or record.hour_adjust or record.audit_checked
                     or record.note):
                 continue
@@ -131,6 +135,10 @@ class Overrides:
                 "charged": sorted(record.charged),
                 "weekdays": list(record.weekdays) if record.weekdays else None,
                 "sessionHours": record.session_hours,
+                "scheduleByMonth": {
+                    k: {"weekdays": list(v["weekdays"]), "sessionHours": v.get("session_hours")}
+                    for k, v in record.schedule_by_month.items()
+                },
                 "planReading": record.plan_reading,
                 "holdDates": record.hold_dates,
                 "hourAdjust": record.hour_adjust,
@@ -154,6 +162,11 @@ class Overrides:
             weekdays = raw.get("weekdays")
             record.weekdays = tuple(weekdays) if weekdays else None
             record.session_hours = raw.get("sessionHours")
+            record.schedule_by_month = {
+                k: {"weekdays": tuple(v["weekdays"]), "session_hours": v.get("sessionHours")}
+                for k, v in (raw.get("scheduleByMonth") or {}).items()
+                if isinstance(v, dict) and v.get("weekdays")
+            }
             record.plan_reading = raw.get("planReading")
             record.hold_dates = list(raw.get("holdDates") or [])
             record.hour_adjust = {k: int(v) for k, v in (raw.get("hourAdjust") or {}).items()}

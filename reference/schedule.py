@@ -154,6 +154,82 @@ def infer_for_month(
     )
 
 
+MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _month_tag(key: str) -> str:
+    year, month = key.split("-")
+    return f"{MONTH_ABBR[int(month) - 1]} {int(year)}"
+
+
+def schedule_for_month(
+    visits: list[Visit],
+    required_hours: int,
+    first: dt.date,
+    last: dt.date,
+    by_month: dict[str, dict] | None,
+    old_weekdays: tuple[int, ...] | None,
+    old_session_hours: int | None,
+    finished: bool,
+) -> Schedule:
+    """The schedule one month runs on, answers included (7 Nov 2026).
+
+    A schedule answer belongs to a month (``by_month``, "YYYY-MM" -> weekdays and session
+    length): it covers the month it was given for and carries forward to later months
+    until the next answer, and never reaches back, the same as a plan. An answer saved
+    before then (``old_weekdays``, with no month) carries forward from the first month.
+
+    - An answer for this very month is used as it is.
+    - A finished month that nobody answered for is judged by what the student actually
+      came on, when its own attendance shows that clearly (three weeks or more, the days
+      plainly ahead of the rest), so a schedule that changed without anyone noticing
+      still names the right missed dates once the month is over.
+    - Otherwise the latest earlier answer. In the current month it is flagged when as
+      many of this month's sessions fall off its days as on them, so the queue asks again.
+    - No answer at all: the inference, as before.
+    """
+    inferred = infer_for_month(visits, required_hours, first, last)
+    key = f"{first.year:04d}-{first.month:02d}"
+    answers = {k: v for k, v in (by_month or {}).items() if v and v.get("weekdays")}
+
+    def by_hand(answer: dict, reason: str) -> Schedule:
+        return Schedule(tuple(sorted(answer["weekdays"])),
+                        answer.get("session_hours") or inferred.session_hours, True, reason)
+
+    if key in answers:
+        return by_hand(answers[key], f"set by hand for {_month_tag(key)}")
+    earlier = sorted(k for k in answers if k < key)
+    if earlier:
+        carried = answers[earlier[-1]]
+        reason = f"set by hand for {_month_tag(earlier[-1])}"
+    elif old_weekdays:
+        carried = {"weekdays": old_weekdays, "session_hours": old_session_hours}
+        reason = "set by hand"
+    else:
+        return inferred
+    hand = by_hand(carried, reason)
+
+    in_month = [v for v in visits if first <= v.date <= last and v.hours > 0 and not v.marker]
+    if finished:
+        weeks = len({(v.date.isocalendar()[0], v.date.isocalendar()[1]) for v in in_month})
+        if weeks < 3 or not inferred.confident or tuple(inferred.weekdays) == hand.weekdays:
+            return hand
+        return Schedule(inferred.weekdays, inferred.session_hours, True,
+                        f"what they came on in {_month_tag(key)} ({hand.label()} {reason})")
+    usual = set(hand.weekdays)
+    off = sum(1 for v in in_month if v.date.weekday() not in usual)
+    if not in_month or off * 2 < len(in_month):
+        return hand
+    seen = sorted({v.date.weekday() for v in in_month})
+    return Schedule(
+        hand.weekdays,
+        hand.session_hours,
+        False,
+        f"this month's sessions so far are on {', '.join(WEEKDAY_NAMES[d] for d in seen)}, "
+        f"not the days {reason} ({hand.label()})",
+    )
+
+
 def scheduled_dates(schedule: Schedule, first: dt.date, last: dt.date) -> list[dt.date]:
     """Every date in [first, last] falling on one of the student's scheduled weekdays."""
     if not schedule.weekdays:
