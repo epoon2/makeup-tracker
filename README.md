@@ -195,6 +195,16 @@ only had a Tuesday so far is still Tue/Fri, not a question. The review queue ask
 as many of this month's sessions fall on other days as on last month's, and offers this
 month's days as the other answer.
 
+**Schedule answers belong to a month.** An answer given in the review queue is saved for the
+month it was asked about and carries into later months until the next answer, but never
+back into earlier months. A finished month nobody answered for is judged by what the student
+actually came on, when that month's attendance shows it clearly (three weeks or more, the
+days plainly ahead of the rest), so a schedule that changed without anyone noticing still
+gives the right missed dates once the month is over. In the current month a carried answer
+is asked about again when as many of this month's sessions fall on other days as on its
+days. In the detail panel, each visit under "Came on" is marked against its own month's
+schedule.
+
 ## Remembering the exports
 
 (On one computer, without signing in. Signed in, the exports come from the shared copy
@@ -263,7 +273,8 @@ The other questions the tool asks rather than guessing, each with the likely ans
 - **What the plan number means**, when neither the months nor the weekly pattern can tell.
 - **A guessed schedule.** Confirm the inferred days, take the days seen this month, or
   pick them by hand. This is the highest-leverage answer, since the schedule drives both
-  missed dates and the current-month projection.
+  missed dates and the current-month projection. The answer is saved for this month and
+  carries forward; a later month asks again only if its sessions stop matching it.
 
 Answers save automatically and an answered question does not come back. Signed in to the
 shared copy, they save to the site for everyone; otherwise they stay in this browser.
@@ -473,7 +484,7 @@ promised.**
 
 **Checks:**
 
-- `npm test`: 44 server tests (sign-in, lockout, accounts, conflicts and merging, record
+- `npm test`: 45 server tests (sign-in, lockout, accounts, conflicts and merging, record
   cleaning, backups, the column filter, the sync's token). They run on every Netlify build.
 - `node tests/shared_browser.mjs`: two real browsers against a stand-in of the site, from
   setup through answering and sign-out, including a hostile record (45 checks).

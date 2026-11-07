@@ -83,7 +83,7 @@ both, and into `mergeRecords()` in core.mjs, or it will be dropped on the way to
 ## Verifying a change
 
 **Always run the in-page self-check first.** Open `index.html`, scroll to the bottom, click
-**Run self-check**. It runs 129 assertions against fixed inputs — rounding, date handling,
+**Run self-check**. It runs 152 assertions against fixed inputs — rounding, date handling,
 the judged window and standalone months, hold coverage, absence resolution, schedule inference, the data horizon,
 session windows, plan reading and per-month plans, a small end-to-end report, and how
 shared answers are sent and merged, and the stale-sync warning — and needs no exports and no tooling. It takes
@@ -101,7 +101,7 @@ and record what moved and why.
 **If you have Python available**, the deeper checks are:
 
 ```bash
-python3 -m pytest tests -q                      # 39 unit tests on the Python rules
+python3 -m pytest tests -q                      # 53 unit tests on the Python rules
 node tests/synthetic_exports.mjs                # made-up exports into testdata/, when the real ones are not at hand
 PARITY_TODAY=2026-10-20 python3 tests/parity_browser.py   # parity on those
 python3 -m reference.run testdata/attendance.xlsx testdata/students.xlsx 2026-08-19
@@ -114,7 +114,7 @@ python3 tests/csp_browser.py                    # runs with all network blocked
 
 ```bash
 npm install
-npm test                                        # 44 server tests
+npm test                                        # 45 server tests
 node tests/shared_browser.mjs                   # two browsers, setup to sign-out (45 checks)
 SITE_URL=http://localhost:8888 node tests/shared_browser.mjs   # same, against `netlify dev`
 ```
@@ -152,7 +152,7 @@ Sections in order, each opening with a `/* ---` comment block explaining why it 
 | Rendering | 1345 | Cards, tabs, table, detail panels. |
 | Writing .xlsx | 1521 | CRC32 plus `CompressionStream`, minimal OOXML. |
 | Shared mode | 2590 | Sign-in, accounts, answer sync (`answerPatch`/`adoptAnswers`), shared exports, the pre-sharing offer. |
-| Self-check | 3430 | The 129 assertions. |
+| Self-check | 3530 | The 152 assertions. |
 | Student search | 3770 | Global search, keyboard handling, focus mode. |
 
 Line numbers drift as soon as you edit. Search for the section title instead.
@@ -355,6 +355,19 @@ widened to all history and flagged any short month whose days differed from it, 
 first days of November nearly every student was a question (161), since one week shows only
 some of their days. Ethan: "It should infer their schedule based on the last month, and if
 there is a discrepancy between that and the new month's sessions, then it should ask me."
+
+**Schedule answers belong to a month** (7 Nov 2026, both engines, `scheduleForMonth` /
+`schedule_for_month`). Answers are saved in `scheduleByMonth` ("YYYY-MM" -> weekdays and
+session length) for the month asked about (question id `schedule:YYYY-MM`). An answer covers
+its month and carries forward until the next one, never back, like a plan. A finished month
+with no answer of its own goes by what the student actually came on when that month's own
+inference is confident (three weeks or more); otherwise the carried answer. In the current
+month a carried answer is flagged, and asked about again, when as many of this month's
+sessions fall off its days as on them. The old month-less `weekdays` answer still works as
+an answer carried from the first month. "Came on" marks each visit against its own month's
+schedule, not the current one. `scheduleByMonth` is in both `cleanRecord()` copies and in
+`mergeRecords()`. Ethan: "it keeps a schedule per month ... once the month ends, it infers what
+their monthly schedule actually was ... and base the missing dates off those."
 
 **The "likely on a bigger plan" note needs three completed months.** It reads every month
 in the export, so with an export starting 1 August it cannot appear before November.

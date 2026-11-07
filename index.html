@@ -994,6 +994,67 @@ function inferScheduleForMonth(visits, requiredHours, firstN, lastN) {
   };
 }
 
+/*
+  The schedule one month runs on, answers included (7 Nov 2026).
+
+  A schedule answer belongs to a month (scheduleByMonth, "YYYY-MM" -> days): it covers the
+  month it was given for and carries forward to later months until the next answer, and
+  never reaches back, the same as a plan. An answer saved before then (weekdays, with no
+  month) carries forward from the first month.
+    - An answer for this very month is used as it is.
+    - A finished month that nobody answered for is judged by what the student actually
+      came on, when its own attendance shows that clearly (three weeks or more, the days
+      plainly ahead of the rest). A schedule that changed without anyone noticing still
+      names the right missed dates once the month is over (Ethan: "once the month ends,
+      it infers what their monthly schedule actually was").
+    - Otherwise the latest earlier answer. In the current month it is flagged when as
+      many of this month's sessions fall off its days as on them, so the queue asks again
+      about this month, the same test a short month puts to last month's days.
+    - No answer at all: the inference, as before.
+  answers is the student's override record (or null); finished is false for the current
+  month only.
+*/
+function scheduleForMonth(visits, requiredHours, y, m, answers, finished) {
+  const firstN = mkDate(y, m, 1).n, lastN = mkDate(y, m, lastDayOf(y, m)).n;
+  const inferred = inferScheduleForMonth(visits, requiredHours, firstN, lastN);
+  const key = monthKey(y, m);
+  const byMonth = (answers && answers.scheduleByMonth) || {};
+  const usable = (a) => a && Array.isArray(a.weekdays) && a.weekdays.length > 0;
+  const tag = (k) => { const [ky, km] = k.split("-").map(Number); return MON_ABBR[km - 1] + " " + ky; };
+  const byHand = (a, reason) => ({ weekdays: [...a.weekdays].sort((p, q) => p - q),
+    sessionHours: a.sessionHours || inferred.sessionHours, confident: true, reason });
+
+  if (usable(byMonth[key])) return byHand(byMonth[key], "set by hand for " + tag(key));
+  const earlier = Object.keys(byMonth).filter((k) => k < key && usable(byMonth[k])).sort();
+  let carried = null, reason = "";
+  if (earlier.length) {
+    carried = byMonth[earlier[earlier.length - 1]];
+    reason = "set by hand for " + tag(earlier[earlier.length - 1]);
+  } else if (answers && usable(answers)) {
+    carried = answers;
+    reason = "set by hand";
+  }
+  if (!carried) return inferred;
+  const hand = byHand(carried, reason);
+
+  const inMonth = visits.filter((v) => v.date.n >= firstN && v.date.n <= lastN && v.hours > 0 && !v.marker);
+  if (finished) {
+    const weeks = new Set(inMonth.map((v) => isoWeekKey(v.date.n))).size;
+    if (weeks < 3 || !inferred.confident || inferred.weekdays.join(",") === hand.weekdays.join(",")) return hand;
+    return Object.assign({}, inferred, { reason: "what they came on in " + tag(key) + " (" + scheduleLabel(hand) + " " + reason + ")" });
+  }
+  const usual = new Set(hand.weekdays);
+  const off = inMonth.filter((v) => !usual.has(weekdayOf(v.date.n))).length;
+  if (!inMonth.length || off * 2 < inMonth.length) return hand;
+  const seen = [...new Set(inMonth.map((v) => weekdayOf(v.date.n)))].sort((a, b) => a - b);
+  return Object.assign({}, hand, {
+    confident: false,
+    reason: "this month's sessions so far are on " + seen.map((w) => WEEKDAYS[w]).join(", ") +
+            ", not the days " + reason + " (" + scheduleLabel(hand) + ")",
+    newWeekdays: inferSchedule(inMonth, requiredHours).weekdays,
+  });
+}
+
 function scheduleLabel(s) {
   return s.weekdays.length ? s.weekdays.map((w) => WEEKDAYS[w]).join(", ") : "unknown";
 }
@@ -1074,7 +1135,7 @@ const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return 
 function ovFor(key, create) {
   let rec = overrides.students[key];
   if (!rec && create) {
-    rec = overrides.students[key] = { holds: [], holdDates: [], planHours: {}, hourAdjust: {}, notEnrolled: [], charged: [], weekdays: null, sessionHours: null, planReading: null, note: "", answered: [], auditChecked: [] };
+    rec = overrides.students[key] = { holds: [], holdDates: [], planHours: {}, hourAdjust: {}, notEnrolled: [], charged: [], weekdays: null, sessionHours: null, scheduleByMonth: {}, planReading: null, note: "", answered: [], auditChecked: [] };
   }
   if (rec) {
     // Backfill fields on records saved by an older version of the page.
@@ -1082,6 +1143,7 @@ function ovFor(key, create) {
     rec.hourAdjust = rec.hourAdjust || {};
     rec.auditChecked = rec.auditChecked || [];
     rec.charged = rec.charged || [];
+    rec.scheduleByMonth = rec.scheduleByMonth || {};
   }
   return rec || null;
 }
@@ -1534,15 +1596,10 @@ function buildReport(attendance, roster, todayN) {
 
     const schedules = {};
     const months = span.map(([y, m], i) => {
-      const firstN = mkDate(y, m, 1).n;
-      const lastN = mkDate(y, m, lastDayOf(y, m)).n;
       const monthPlan = monthly.plans[i] * unit;
-      let s = inferScheduleForMonth(list, monthPlan, firstN, lastN);
-      if (over && over.weekdays) {
-        s = { weekdays: [...over.weekdays].sort((a, b) => a - b),
-              sessionHours: over.sessionHours || s.sessionHours,
-              confident: true, reason: "set by hand" };
-      }
+      // Answers apply per month; a finished month nobody answered for goes by what the
+      // student actually came on (scheduleForMonth).
+      const s = scheduleForMonth(list, monthPlan, y, m, over, i < span.length - 1);
       schedules[y + "-" + m] = s;
       return buildMonth(y, m, list, s, monthPlan, rec, todayN, dataThroughN, over, holdRanges,
                         over && over.hourAdjust ? over.hourAdjust[monthKey(y, m)] || 0 : 0,
@@ -1598,13 +1655,19 @@ function buildReport(attendance, roster, todayN) {
     // charge them, so they are not repeated here.
     const inWindow = list.filter((v) => v.date.n >= win.startN);
     const audit = auditVisits(inWindow, todayN);
-    const onSched = new Set(schedule.weekdays);
+    // Each visit is on or off the schedule of its own month, not this month's.
+    const onSchedule = (n) => {
+      const d = fromDayNumber(n);
+      return (schedules[d.y + "-" + d.m] || schedule).weekdays.includes(weekdayOf(n));
+    };
     const attendedDates = inWindow
-      .map((v) => ({ n: v.date.n, hours: v.hours, marker: v.marker, onSchedule: onSched.has(weekdayOf(v.date.n)) }))
+      .map((v) => ({ n: v.date.n, hours: v.hours, marker: v.marker, onSchedule: onSchedule(v.date.n) }))
       .sort((a, b) => a.n - b.n);
     students.push({
       key, display: displayName(key), studentId: rec ? rec.studentId : "",
       plan, planInfo, schedule, schedules, months: judged, ledger, rec, flags, notes, current, attendedDates, over, audit,
+      // The month `schedule` belongs to (the current one): a schedule answer is saved for it.
+      scheduleMonth: monthKey(span[span.length - 1][0], span[span.length - 1][1]),
       // Held right now, which is what the On hold list means. Driven by the current
       // month rather than roster status, so a hold entered by hand lands on the list.
       onHold: current ? current.onHold : !!(rec && rec.onHold),
@@ -1718,9 +1781,15 @@ function buildQuestions(rep) {
     }
 
     // 3. A schedule the tool had to guess. This is the highest-leverage answer: the
-    // schedule drives missed dates and the current-month projection.
-    if (!s.schedule.confident && !s.over?.weekdays) {
-      const id = "schedule";
+    // schedule drives missed dates and the current-month projection. The answer is for
+    // this month and carries forward; it is asked again in a later month only if that
+    // month's sessions stop matching it.
+    if (!s.schedule.confident) {
+      const id = "schedule:" + s.scheduleMonth;
+      const setDays = (days) => {
+        const r = ovFor(s.key, true);
+        r.scheduleByMonth[s.scheduleMonth] = { weekdays: [...days], sessionHours: s.schedule.sessionHours };
+      };
       if (!wasAnswered(s.key, id)) {
         const guessed = s.schedule.weekdays;
         const alt = [];
@@ -1732,21 +1801,19 @@ function buildQuestions(rep) {
           const ms = s.schedules[mo.y + "-" + mo.m];
           if (ms && ms.weekdays.join(",") !== guessed.join(",")) alt.push(ms.weekdays);
         }
-        const options = [
-          { label: "Yes — " + scheduleLabel(s.schedule), suggest: true, apply: () => {
-              const r = ovFor(s.key, true); r.weekdays = [...guessed]; r.sessionHours = s.schedule.sessionHours; } },
-        ];
-        if (alt.length) {
-          const a = alt[0];
-          options.push({ label: "No — " + a.map((w) => WEEKDAYS[w]).join(", "), apply: () => {
-              const r = ovFor(s.key, true); r.weekdays = [...a]; r.sessionHours = s.schedule.sessionHours; } });
-        }
+        // No guess at all (no attendance to go on): only picking days makes sense.
+        const options = guessed.length
+          ? [{ label: "Yes — " + scheduleLabel(s.schedule), suggest: true, apply: () => setDays(guessed) }]
+          : [];
+        const a = alt.find((x) => x.length);
+        if (a) options.push({ label: (guessed.length ? "No — " : "") + a.map((w) => WEEKDAYS[w]).join(", "), apply: () => setDays(a) });
         options.push({ label: "Pick days", picker: true });
         out.push({
           cat: "schedule",
           key: s.key, id, who: s.display,
-          ask: "Their " + s.plan + " hr plan needs a weekly pattern and this one had to be guessed (" +
-               s.schedule.reason + "). Is it " + scheduleLabel(s.schedule) + "?",
+          ask: "Their " + s.plan + " hr plan needs a weekly pattern and this one is not certain (" +
+               s.schedule.reason + "). In " + (s.current ? s.current.shortLabel : s.scheduleMonth) +
+               ", is it " + scheduleLabel(s.schedule) + "? The answer carries into later months.",
           options,
         });
       }
@@ -1967,8 +2034,10 @@ function renderQueue() {
       const days = [...el("picker" + i).querySelectorAll("input:checked")].map((c) => +c.value);
       if (!days.length) return;
       const r = ovFor(q.key, true);
-      r.weekdays = days;
-      r.sessionHours = report.students.find((s) => s.key === q.key)?.schedule.sessionHours || 1;
+      const st = report.students.find((s) => s.key === q.key);
+      // For the month the question was about (schedule:YYYY-MM), carried forward from there.
+      const mk = q.id.startsWith("schedule:") ? q.id.slice(9) : st.scheduleMonth;
+      r.scheduleByMonth[mk] = { weekdays: days, sessionHours: (st && st.schedule.sessionHours) || 1 };
       markAnswered(q.key, q.id);
       await saveOverrides();
       rerun();
@@ -2087,7 +2156,10 @@ function detailFor(s) {
     const saved = [];
     const nHolds = (s.over.holds || []).length + (s.over.holdDates || []).length;
     if (nHolds) saved.push(nHolds + " hold(s)");
-    if (s.over.weekdays) saved.push("schedule set by hand");
+    const handMonths = Object.keys(s.over.scheduleByMonth || {}).sort()
+      .map((k) => MON_ABBR[+k.slice(5) - 1] + " " + k.slice(0, 4));
+    if (handMonths.length) saved.push("schedule set by hand for " + handMonths.join(", "));
+    else if (s.over.weekdays) saved.push("schedule set by hand");
     if (s.over.planReading) saved.push("plan read as " + s.over.planReading);
     if ((s.over.charged || []).length) saved.push((s.over.charged || []).length + " month(s) charged");
     if ((s.over.notEnrolled || []).length) saved.push((s.over.notEnrolled || []).length + " month(s) not enrolled");
@@ -2698,6 +2770,19 @@ function cleanRecord(rec) {
     }
     return out;
   };
+  const length = (x) => (typeof x === "number" && isFinite(x) && x > 0 && x <= 12 ? x : null);
+  // Schedule answers per month: "YYYY-MM" -> { weekdays, sessionHours }.
+  const schedules = (v) => {
+    const out = {};
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k, x] of Object.entries(v).slice(0, 120)) {
+        if (!MONTH_KEY.test(k) || !x || typeof x !== "object" || Array.isArray(x)) continue;
+        const days = unique(list(x.weekdays, 7, (d) => Number.isInteger(d) && d >= 0 && d <= 6));
+        if (days.length) out[k] = { weekdays: days, sessionHours: length(x.sessionHours) };
+      }
+    }
+    return out;
+  };
   return {
     holds: unique(list(r.holds, 60, (h) => h && month(h.start) && (h.until == null || month(h.until)) && (h.source === undefined || text(40)(h.source)))
       .map((h) => (h.source === undefined ? { start: h.start, until: h.until || null } : { start: h.start, until: h.until || null, source: h.source }))),
@@ -2707,7 +2792,8 @@ function cleanRecord(rec) {
     notEnrolled: unique(list(r.notEnrolled, 60, month)),
     charged: unique(list(r.charged, 60, month)),
     weekdays: Array.isArray(r.weekdays) ? unique(list(r.weekdays, 7, (d) => Number.isInteger(d) && d >= 0 && d <= 6)) : null,
-    sessionHours: typeof r.sessionHours === "number" && isFinite(r.sessionHours) && r.sessionHours > 0 && r.sessionHours <= 12 ? r.sessionHours : null,
+    sessionHours: length(r.sessionHours),
+    scheduleByMonth: schedules(r.scheduleByMonth),
     planReading: r.planReading === "hours" || r.planReading === "sessions" ? r.planReading : null,
     note: typeof r.note === "string" ? r.note.slice(0, 2000) : "",
     answered: unique(list(r.answered, 1000, text(300))),
@@ -3570,6 +3656,37 @@ function selfCheck() {
   const extra = inferScheduleForMonth(tueFri.concat([visit(2026, 11, 3, 1), visit(2026, 11, 6, 1), visit(2026, 11, 7, 1)]), 8, ...NOV);
   is("Tue and Fri kept, one Saturday too: not asked", [extra.weekdays, extra.confident], [[1, 4], true]);
 
+  // --- schedule answers belong to a month (7 Nov 2026) -----------------------------------
+  // Wed/Thu all September, Mon/Thu all October, Mon and Thu so far in November.
+  const wedThu = [];
+  for (let w = 0; w < 4; w++) { wedThu.push(visit(2026, 9, 2 + w * 7, 1)); wedThu.push(visit(2026, 9, 3 + w * 7, 1)); }
+  for (let w = 0; w < 4; w++) { wedThu.push(visit(2026, 10, 1 + w * 7, 1)); wedThu.push(visit(2026, 10, 5 + w * 7, 1)); }
+  const plusNov = wedThu.concat([visit(2026, 11, 2, 1), visit(2026, 11, 5, 1)]);
+  const octAnswer = { scheduleByMonth: { "2026-10": { weekdays: [3, 0], sessionHours: 1 } } };
+  const oct = scheduleForMonth(plusNov, 8, 2026, 10, octAnswer, true);
+  is("an answer for October is October's", [oct.weekdays, oct.confident, oct.reason], [[0, 3], true, "set by hand for Oct 2026"]);
+  is("and carries into November", scheduleForMonth(plusNov, 8, 2026, 11, octAnswer, false).weekdays, [0, 3]);
+  is("but never back into September", scheduleForMonth(plusNov, 8, 2026, 9, octAnswer, true).weekdays, [2, 3]);
+  const oldAnswer = { weekdays: [0, 3], sessionHours: 1 };
+  const sepOwn = scheduleForMonth(plusNov, 8, 2026, 9, oldAnswer, true);
+  is("a finished month goes by what they came on, not a carried answer",
+     [sepOwn.weekdays, sepOwn.confident, sepOwn.reason], [[2, 3], true, "what they came on in Sep 2026 (Mon, Thu set by hand)"]);
+  is("unless that month was answered itself",
+     scheduleForMonth(plusNov, 8, 2026, 9, { scheduleByMonth: { "2026-09": { weekdays: [0, 3], sessionHours: 1 } } }, true).weekdays, [0, 3]);
+  const twoWeeks = [visit(2026, 9, 2, 1), visit(2026, 9, 3, 1), visit(2026, 9, 9, 1), visit(2026, 9, 10, 1)];
+  is("a finished month too thin to tell keeps the answer", scheduleForMonth(twoWeeks, 8, 2026, 9, oldAnswer, true).weekdays, [0, 3]);
+  const novOff = scheduleForMonth(wedThu.concat([visit(2026, 11, 3, 1), visit(2026, 11, 4, 1)]), 8, 2026, 11, octAnswer, false);
+  is("this month off the answered days: asked again",
+     [novOff.confident, novOff.weekdays, novOff.newWeekdays], [false, [0, 3], [1, 2]]);
+  is("saying why", novOff.reason, "this month's sessions so far are on Tue, Wed, not the days set by hand for Oct 2026 (Mon, Thu)");
+  is("this month on the answered days: not asked", scheduleForMonth(plusNov, 8, 2026, 11, octAnswer, false).confident, true);
+  is("no answers: the inference as before",
+     scheduleForMonth(plusNov, 8, 2026, 9, null, true), inferScheduleForMonth(plusNov, 8, D(2026, 9, 1).n, D(2026, 9, 30).n));
+  is("per-month answers are kept, junk dropped",
+     cleanRecord({ scheduleByMonth: { "2026-10": { weekdays: [0, 3, 3, 9], sessionHours: 1 }, "x": { weekdays: [1] },
+                   "2026-11": { weekdays: [] }, "2026-12": [1] } }).scheduleByMonth,
+     { "2026-10": { weekdays: [0, 3], sessionHours: 1 } });
+
   // --- missed dates and the data horizon ---------------------------------------------
   // Export stops on the 17th, today is the 19th: the 18th is unknown, not missed.
   const mo = buildMonth(2026, 8, weekly.concat([visit(2026, 8, 3, 1)]),
@@ -3717,8 +3834,12 @@ function selfCheck() {
   person("Selfcheck", "Twin", "Enrolled");
   person("Selfcheck", "July", "Enrolled");
   person("Selfcheck", "Sept", "Enrolled");
+  // Wed/Thu in September, Mon/Thu in October, with an old Mon/Thu answer (no month).
+  for (const d of [2, 3, 9, 10, 16, 17, 23, 24, 30]) row("Selfcheck", "Moved", 2026, 9, d, 60, 8);
+  for (const d of [1, 5, 8, 12, 15, 19]) row("Selfcheck", "Moved", 2026, 10, d, 60, 8);
+  person("Selfcheck", "Moved", "Enrolled");
   const savedOverrides = overrides;
-  overrides = { version: 1, students: {} };
+  overrides = { version: 1, students: { [nameKey("Selfcheck", "Moved")]: cleanRecord({ weekdays: [0, 3], sessionHours: 1 }) } };
   let mini;
   try { mini = buildReport({ records: rowsA }, { records: rowsR }, D(2026, 10, 20).n); }
   finally { overrides = savedOverrides; }
@@ -3737,6 +3858,12 @@ function selfCheck() {
   is("a short September is owed, whatever October brings", kid("Sept").owed, 4);
   is("an old record under the same name is not a clash", kid("Gap").flags.some((f) => /two Enrolled/.test(f)), false);
   is("two Enrolled records under one name are", mini.warnings.some((w) => /^1 name\(s\) belong to more than one Enrolled/.test(w)), true);
+  const moved2 = kid("Moved");
+  is("September keeps its own Wed/Thu under an old Mon/Thu answer",
+     [moved2.schedules["2026-9"].weekdays, moved2.schedule.weekdays], [[2, 3], [0, 3]]);
+  is("so a September Wednesday is on schedule, not a makeup",
+     moved2.attendedDates.find((v) => v.n === D(2026, 9, 2).n).onSchedule, true);
+  is("and nothing in September is missed", moved2.months[1].missed, []);
 
   // --- exact hold dates -----------------------------------------------------------------
   is("month-aligned dates become a month hold",
@@ -3984,8 +4111,8 @@ el("importAnswers").addEventListener("click", () => el("answerPicker").click());
 /*
   Merge another set of answers into these rather than replacing them, so loading a
   colleague's file does not silently drop answers already given here. Lists (holds,
-  months, answered questions) are combined. For single values (schedule, plan reading,
-  note) the loaded file wins, unless keepMine is set, when an answer already here is
+  months, answered questions) are combined. For single values (schedule, a month's
+  schedule, plan reading, note) the loaded file wins, unless keepMine is set, when an answer already here is
   kept: that is how a computer's pre-sharing answers join the shared copy without
   overwriting what colleagues have answered since.
 */
@@ -4000,6 +4127,8 @@ function mergeAnswers(loaded, keepMine) {
     for (const m of rec.notEnrolled || []) if (!mine.notEnrolled.includes(m)) mine.notEnrolled.push(m);
     for (const m of rec.charged || []) if (!mine.charged.includes(m)) mine.charged.push(m);
     if (rec.weekdays && !(keepMine && mine.weekdays)) { mine.weekdays = rec.weekdays; mine.sessionHours = rec.sessionHours || mine.sessionHours; }
+    mine.scheduleByMonth = keepMine ? Object.assign({}, rec.scheduleByMonth || {}, mine.scheduleByMonth || {})
+      : Object.assign(mine.scheduleByMonth || {}, rec.scheduleByMonth || {});
     if (rec.planReading && !(keepMine && mine.planReading)) mine.planReading = rec.planReading;
     mine.holdDates = mine.holdDates || [];
     const seenDates = new Set(mine.holdDates.map((h) => h.from + ">" + h.to));
