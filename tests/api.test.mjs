@@ -668,6 +668,24 @@ describe("after review", () => {
     assert.deepEqual(rec.answered, ["absent:2026-09"]);
   });
 
+  test("schedule answers are kept per month, and two people answering different months both stay", async () => {
+    const s = await withAdmin(memory());
+    const maria = await addUser(s.admin, s, "maria");
+    const key = "test\u001fstudent";
+    const base = cleanRecord({ scheduleByMonth: { "2026-09": { weekdays: [2, 3], sessionHours: 1 } } });
+    await s.admin.call("PATCH", "/api/answers", { json: { set: { [key]: base } } });
+    await maria.call("PATCH", "/api/answers", { json: { set: { [key]: {
+      scheduleByMonth: { "2026-09": { weekdays: [2, 3], sessionHours: 1 }, "2026-10": { weekdays: [0, 3], sessionHours: 1 } } } }, base: { [key]: base } } });
+    const r = await s.admin.call("PATCH", "/api/answers", { json: { set: { [key]: {
+      scheduleByMonth: { "2026-09": { weekdays: [2, 3], sessionHours: 1 }, "2026-11": { weekdays: [1, "x", 9], sessionHours: "<b>" }, "bad": { weekdays: [1] } } } },
+      base: { [key]: base } } });
+    assert.deepEqual(r.data.answers.students[key].scheduleByMonth, {
+      "2026-09": { weekdays: [2, 3], sessionHours: 1 },
+      "2026-10": { weekdays: [0, 3], sessionHours: 1 },
+      "2026-11": { weekdays: [1], sessionHours: null },
+    });
+  });
+
   test("hour corrections from two people add up, and a stale clear keeps the newer hold", async () => {
     const s = await withAdmin(memory());
     const maria = await addUser(s.admin, s, "maria");
